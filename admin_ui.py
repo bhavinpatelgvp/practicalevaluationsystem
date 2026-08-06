@@ -71,7 +71,7 @@ def _department_crud(db, user_id: int) -> None:
         st.caption("Add department")
         code = st.text_input("Department code")
         name = st.text_input("Department name")
-        if st.form_submit_button("Add department", type="primary"):
+        if st.form_submit_button("Add department"):
             if not code.strip() or not name.strip():
                 st.error("Enter both a department code and name.")
             else:
@@ -152,7 +152,7 @@ def _subject_crud(db, user_id: int) -> None:
         name = st.text_input("Subject name")
         semester = st.number_input("Semester", min_value=1, max_value=12, value=1)
         department_id = st.selectbox("Department", list(departments), format_func=departments.get, key="add_subject_department")
-        if st.form_submit_button("Add subject", type="primary"):
+        if st.form_submit_button("Add subject"):
             if not code.strip() or not name.strip():
                 st.error("Enter a subject code and name.")
             else:
@@ -227,7 +227,7 @@ def _faculty_crud(db, user_id: int) -> None:
             password = st.text_input("Temporary password", type="password") if mode == "New account" else None
             existing_user_id = st.selectbox("Choose user", list(non_faculty_labels), format_func=non_faculty_labels.get, key="faculty_existing_user") if mode == "Promote an existing user" else None
             assigned_subjects = st.multiselect("Subjects assigned to this faculty member", list(all_subjects), format_func=lambda value: all_subjects[value], key="add_faculty_subjects")
-            if st.form_submit_button("Create faculty profile", type="primary"):
+            if st.form_submit_button("Create faculty profile"):
                 if mode == "New account":
                     if not all([username, full_name, email, password]):
                         st.error("Complete username, full name, email, and password.")
@@ -271,7 +271,7 @@ def _faculty_crud(db, user_id: int) -> None:
                 key="edit_faculty_subjects",
             )
             new_password = st.text_input("Reset password (leave blank to keep)", type="password")
-            if st.form_submit_button("Save changes", type="primary"):
+            if st.form_submit_button("Save changes"):
                 member.full_name = edited_name.strip() or member.full_name
                 member.email = edited_email.strip() or member.email
                 member.is_active = edited_active
@@ -311,7 +311,7 @@ def _user_crud(db, user_id: int) -> None:
         email = st.text_input("Email")
         password = st.text_input("Temporary password", type="password")
         role_id = st.selectbox("Role", list(roles), format_func=roles.get, key="create_user_role")
-        if st.form_submit_button("Create user", type="primary"):
+        if st.form_submit_button("Create user"):
             if not all([username.strip(), full_name.strip(), email.strip(), password]):
                 st.error("Complete all fields.")
             else:
@@ -335,7 +335,7 @@ def _user_crud(db, user_id: int) -> None:
                 default_role_index = list(roles).index(target.role_id) if target.role_id in roles else 0
                 edited_role = st.selectbox("Role", list(roles), index=default_role_index, format_func=roles.get, key="update_user_role")
                 new_password = st.text_input("Reset password (leave blank to keep)", type="password")
-                if st.form_submit_button("Save changes", type="primary"):
+                if st.form_submit_button("Save changes"):
                     target.full_name = edited_name.strip() or target.full_name
                     target.email = edited_email.strip() or target.email
                     target.is_active = edited_active
