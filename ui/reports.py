@@ -5,7 +5,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from models import Assignment, Evaluation, Student, Submission
+from models.schema import Assignment, Evaluation, Student, Submission
 
 
 def marks_dataframe(db: Session) -> pd.DataFrame:

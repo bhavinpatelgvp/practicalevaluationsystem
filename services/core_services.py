@@ -12,8 +12,8 @@ import pandas as pd
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
-from auth import hash_password
-from models import (
+from services.auth_service import hash_password
+from models.schema import (
     Assignment,
     AuditLog,
     Department,
@@ -136,7 +136,7 @@ def ensure_permission(db: Session, code: str, description: str = "") -> Permissi
 
 
 def grant_role_permission(db: Session, role: Role, permission: Permission) -> None:
-    from models import RolePermission
+    from models.schema import RolePermission
 
     exists = db.scalar(select(RolePermission).where(RolePermission.role_id == role.id, RolePermission.permission_id == permission.id))
     if not exists:

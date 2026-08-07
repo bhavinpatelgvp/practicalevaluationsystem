@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
-from config import settings
+from core.config import settings
 
 
 def _urlsafe_b64encode(data: bytes) -> str:

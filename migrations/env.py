@@ -10,9 +10,9 @@ from alembic import context
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import app config and models so Alembic can see Base.metadata
-from config import settings  # noqa: E402
-from database import Base  # noqa: E402
-import models  # noqa: F401 E402 — registers all ORM models on Base.metadata
+from core.config import settings  # noqa: E402
+from core.database import Base  # noqa: E402
+from models import schema as models  # noqa: F401 E402 — registers all ORM models on Base.metadata
 
 # Alembic Config object
 config = context.config

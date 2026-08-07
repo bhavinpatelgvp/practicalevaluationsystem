@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
-from config import settings
+from core.config import settings
 
 
 class Base(DeclarativeBase):
@@ -48,7 +48,7 @@ def init_db() -> None:
     This is kept for local development and the test suite.
     In production, run_migrations() should be used instead.
     """
-    from models import all_models  # noqa: F401
+    from models.schema import all_models  # noqa: F401
     Base.metadata.create_all(engine)
     with engine.begin() as connection:
         practical_columns = {column["name"] for column in inspect(engine).get_columns("practicals")}

@@ -1,8 +1,8 @@
 from datetime import date, timedelta
-from database import SessionLocal, init_db
-from services import ensure_role, ensure_permission, grant_role_permission
-from auth import hash_password
-from models import Department, FacultySubject, Practical, Student, Subject, User
+from core.database import SessionLocal, init_db
+from services.core_services import ensure_role, ensure_permission, grant_role_permission
+from services.auth_service import hash_password
+from models.schema import Department, FacultySubject, Practical, Student, Subject, User
 
 LOGIN_ROLES = ["Administrator", "Faculty", "Student", "External Examiner", "Coordinator"]
 # permission_code -> (description, list of role names that should receive it)

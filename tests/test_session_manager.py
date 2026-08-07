@@ -1,5 +1,5 @@
 import time
-from session_manager import create_session_token, verify_session_token
+from core.session_manager import create_session_token, verify_session_token
 
 
 def test_session_token_create_and_verify():

@@ -1,11 +1,11 @@
 import streamlit as st
-from database import SessionLocal
-from auth import authenticate, create_password_reset, verify_password_reset, mark_password_reset_used, hash_password
-from rbac import has_permission
-from email_service import send_html_email
-from session_manager import create_session_token
+from core.database import SessionLocal
+from services.auth_service import authenticate, create_password_reset, verify_password_reset, mark_password_reset_used, hash_password
+from core.rbac import has_permission
+from services.email_service import send_html_email
+from core.session_manager import create_session_token
 from sqlalchemy import select
-from models import User
+from models.schema import User
 from datetime import datetime, timezone
 import re
 

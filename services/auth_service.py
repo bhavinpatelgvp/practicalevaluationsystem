@@ -2,7 +2,7 @@ import bcrypt
 import hashlib
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from models import Role, User, LoginLog, PasswordReset
+from models.schema import Role, User, LoginLog, PasswordReset
 from datetime import datetime, timedelta, timezone
 import secrets
 
@@ -12,7 +12,7 @@ def utc_now() -> datetime:
 
 def ensure_role(db, role_name: str):
     # lazy import to avoid circular dependency between auth and services
-    from services import ensure_role as _ensure_role
+    from services.core_services import ensure_role as _ensure_role
 
     return _ensure_role(db, role_name)
 

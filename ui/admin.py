@@ -2,10 +2,10 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from auth import hash_password
-from models import Department, Permission, Program, Role, Subject, User
-from reports import excel_report, marks_dataframe, pdf_report
-from services import (
+from services.auth_service import hash_password
+from models.schema import Department, Permission, Program, Role, Subject, User
+from ui.reports import excel_report, marks_dataframe, pdf_report
+from services.core_services import (
     assign_faculty_subjects,
     audit,
     build_bulk_import_template,
@@ -21,8 +21,8 @@ from services import (
     validate_bulk_user_import,
     validate_subject_import,
 )
-from services import ensure_role, ensure_permission, grant_role_permission
-from rbac import has_permission
+from services.core_services import ensure_role, ensure_permission, grant_role_permission
+from core.rbac import has_permission
 
 
 def _roles(db) -> dict[int, str]:

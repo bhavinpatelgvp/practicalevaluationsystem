@@ -2,8 +2,8 @@ import pandas as pd
 import streamlit as st
 from datetime import date, timedelta
 from sqlalchemy import select
-from models import Assignment, Practical, Student, Submission, Subject
-from services import (
+from models.schema import Assignment, Practical, Student, Submission, Subject
+from services.core_services import (
     assign_practical,
     build_practical_import_template,
     create_practical,
@@ -16,7 +16,7 @@ from services import (
     update_practical,
     validate_practical_import,
 )
-from rbac import has_permission
+from core.rbac import has_permission
 
 VALID_GRADES = ["A", "B", "C", "D", "E", "F"]
 

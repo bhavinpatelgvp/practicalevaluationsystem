@@ -1,6 +1,6 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from models import Permission, Role, RolePermission
+from models.schema import Permission, Role, RolePermission
 
 
 def has_permission(db: Session, user, permission_code: str) -> bool:

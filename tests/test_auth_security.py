@@ -1,7 +1,7 @@
 import pytest
-from database import Base, SessionLocal, engine
-from models import User, Role
-from auth import (
+from core.database import Base, SessionLocal, engine
+from models.schema import User, Role
+from services.auth_service import (
     hash_password,
     create_password_reset,
     verify_password_reset,

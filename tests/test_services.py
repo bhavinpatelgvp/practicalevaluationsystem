@@ -3,11 +3,11 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
-from database import Base
-from auth import ensure_role, hash_password, verify_password
-from models import Assignment, Department, FacultySubject, Practical, Student, Subject, Submission, User
-from reports import excel_report, pdf_report
-from services import (
+from core.database import Base
+from services.auth_service import ensure_role, hash_password, verify_password
+from models.schema import Assignment, Department, FacultySubject, Practical, Student, Subject, Submission, User
+from ui.reports import excel_report, pdf_report
+from services.core_services import (
     assign_faculty_subjects,
     assign_practical,
     build_practical_import_template,
