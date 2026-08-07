@@ -1,4 +1,11 @@
-from datetime import date, datetime, time, timedelta
+import secrets
+from datetime import date, datetime, time, timedelta, timezone
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 from io import BytesIO
 import re
 import pandas as pd
@@ -10,9 +17,11 @@ from models import (
     Assignment,
     AuditLog,
     Department,
+    Permission,
     Evaluation,
     FacultySubject,
     Practical,
+    Program,
     Role,
     Student,
     Subject,
@@ -40,7 +49,7 @@ def assign_practical(db: Session, practical: Practical, actor_id: int, student_i
     deadline = (
         datetime.combine(practical.submission_date, time.max)
         if practical.submission_date
-        else datetime.utcnow() + timedelta(days=practical.submission_days)
+        else utc_now() + timedelta(days=practical.submission_days)
     )
     for student in students:
         if student.id not in existing:
@@ -58,11 +67,11 @@ def save_submission(db: Session, assignment_id: int, github_url: str, actor_id: 
     if not assignment:
         raise ValueError("Assignment not found.")
     if assignment.submission is None:
-        submission = Submission(assignment=assignment, github_url=github_url.strip(), is_late=datetime.utcnow() > assignment.deadline, **fields)
+        submission = Submission(assignment=assignment, github_url=github_url.strip(), is_late=utc_now() > assignment.deadline, **fields)
         db.add(submission)
     else:
         submission = assignment.submission
-        if datetime.utcnow() > assignment.deadline:
+        if utc_now() > assignment.deadline:
             raise ValueError("The submission deadline has passed.")
         submission.github_url = github_url.strip()
         for key, value in fields.items():
@@ -115,6 +124,24 @@ def ensure_role(db: Session, role_name: str) -> Role:
         db.add(role)
         db.flush()
     return role
+
+
+def ensure_permission(db: Session, code: str, description: str = "") -> Permission:
+    perm = db.scalar(select(Permission).where(Permission.code == code))
+    if perm is None:
+        perm = Permission(code=code, description=description)
+        db.add(perm)
+        db.flush()
+    return perm
+
+
+def grant_role_permission(db: Session, role: Role, permission: Permission) -> None:
+    from models import RolePermission
+
+    exists = db.scalar(select(RolePermission).where(RolePermission.role_id == role.id, RolePermission.permission_id == permission.id))
+    if not exists:
+        db.add(RolePermission(role_id=role.id, permission_id=permission.id))
+        db.flush()
 
 
 def build_bulk_import_template(user_type: str) -> bytes:
@@ -190,7 +217,7 @@ def validate_bulk_user_import(rows: pd.DataFrame, user_type: str, db: Session) -
             enrollment = values.get("Enrollment No", "")
             email = values.get("Email", "")
             if not enrollment:
-                record.update({"status": "Error", "reason": "Missing Enrollment No", "ready": False})
+                record.update({"status": "Error", "reason": "Missing Enrollment No (required)", "ready": False})
             elif enrollment in seen_enrollment or db.scalar(select(User).where(User.username == enrollment)) is not None:
                 record.update({"status": "Warning", "reason": "Duplicate Enrollment No", "ready": False, "duplicate": True})
             else:
@@ -203,7 +230,7 @@ def validate_bulk_user_import(rows: pd.DataFrame, user_type: str, db: Session) -
             faculty_id = values.get("Faculty ID", "")
             email = values.get("Email", "")
             if not faculty_id:
-                record.update({"status": "Error", "reason": "Missing Faculty ID", "ready": False})
+                record.update({"status": "Error", "reason": "Missing Faculty ID (required)", "ready": False})
             elif faculty_id in seen_employee or db.scalar(select(User).where(User.username == faculty_id)) is not None:
                 record.update({"status": "Warning", "reason": "Duplicate Faculty ID", "ready": False, "duplicate": True})
             else:
@@ -216,7 +243,7 @@ def validate_bulk_user_import(rows: pd.DataFrame, user_type: str, db: Session) -
             employee_id = values.get("Employee ID", "")
             email = values.get("Email", "")
             if not employee_id:
-                record.update({"status": "Error", "reason": "Missing Employee ID", "ready": False})
+                record.update({"status": "Error", "reason": "Missing Employee ID (required)", "ready": False})
             elif employee_id in seen_employee or db.scalar(select(User).where(User.username == employee_id)) is not None:
                 record.update({"status": "Warning", "reason": "Duplicate Employee ID", "ready": False, "duplicate": True})
             else:
@@ -246,7 +273,7 @@ def import_bulk_users_from_dataframe(rows: pd.DataFrame, user_type: str, db: Ses
             username = values.get("Enrollment No") or values.get("Faculty ID") or values.get("Employee ID") or values.get("Email")
             email = values.get("Email", "")
             full_name = values.get("Name", "")
-            password = f"Temp{(index + 1) * 7}"
+            password = f"Tmp!{secrets.token_urlsafe(8)}"
             if not username or not email or not full_name:
                 summary["failed"] += 1
                 continue
@@ -570,6 +597,184 @@ def delete_practical(db: Session, practical_id: int, actor_id: int) -> None:
 
 
 # --------------------------------------------------------------------------
+# Bulk practical import (Faculty, scoped to their assigned subjects)
+# --------------------------------------------------------------------------
+
+PRACTICAL_IMPORT_COLUMNS = [
+    "Subject Code",
+    "Practical Title",
+    "Description",
+    "Learning Outcome",
+    "Difficulty",
+    "Grade",
+    "Submission Days",
+    "Submission Date",
+]
+
+
+def build_practical_import_template() -> bytes:
+    """Return an Excel template for bulk practical import."""
+    template = pd.DataFrame(
+        [
+            {
+                "Subject Code": "CS301",
+                "Practical Title": "Build a REST API",
+                "Description": "Implement and document a small REST API.",
+                "Learning Outcome": "Apply API design principles.",
+                "Difficulty": "Medium",
+                "Grade": "B",
+                "Submission Days": 7,
+                "Submission Date": "",
+            }
+        ]
+    )
+    workbook = BytesIO()
+    with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
+        template.to_excel(writer, index=False, sheet_name="Practicals")
+    return workbook.getvalue()
+
+
+def validate_practical_import(rows: pd.DataFrame, db: Session, faculty_id: int) -> list[dict[str, object]]:
+    """Validate bulk practical rows, scoped to the faculty member's assigned subjects.
+
+    Returns preview-style records with a ready flag and error messages.
+    """
+    missing_columns = [column for column in PRACTICAL_IMPORT_COLUMNS if column not in rows.columns]
+    if missing_columns:
+        raise ValueError(f"Missing columns: {', '.join(missing_columns)}")
+
+    assigned = faculty_subject_ids(db, faculty_id)
+    subject_map = {subject.code: subject.id for subject in db.scalars(select(Subject))}
+    subject_owner = {subject.code: subject.id for subject in db.scalars(select(Subject)) if subject.id in assigned}
+
+    preview: list[dict[str, object]] = []
+    seen: set[tuple[str, int]] = set()  # (subject_code, title) to catch duplicates within the sheet
+
+    for index, row in rows.fillna("").iterrows():
+        values = {key: str(value).strip() if isinstance(value, str) else str(value).strip() for key, value in row.items()}
+        record: dict[str, object] = {
+            "row": index + 2,
+            "subject_code": values.get("Subject Code", ""),
+            "title": values.get("Practical Title", ""),
+            "difficulty": values.get("Difficulty", "Medium"),
+            "grade": values.get("Grade", "B"),
+            "submission_days": values.get("Submission Days", ""),
+            "validation_status": "Valid",
+            "error_message": "",
+            "ready": True,
+        }
+        if not any(values.values()):
+            record.update({"validation_status": "Error", "error_message": "Empty row", "ready": False})
+            preview.append(record)
+            continue
+
+        errors: list[str] = []
+        subject_code = values.get("Subject Code", "")
+        title = values.get("Practical Title", "")
+        grade = values.get("Grade", "B").upper()
+        difficulty = values.get("Difficulty", "Medium")
+
+        if not subject_code:
+            errors.append("Subject Code is required")
+        elif subject_code not in subject_map:
+            errors.append("Subject does not exist")
+        elif subject_code not in subject_owner:
+            errors.append("Subject is not assigned to you")
+        else:
+            record["subject_code"] = subject_code
+
+        if not title:
+            errors.append("Practical Title is required")
+        elif len(title) > 200:
+            errors.append("Practical Title exceeds 200 characters")
+        else:
+            record["title"] = title
+
+        if grade not in VALID_GRADES:
+            errors.append("Grade must be one of A, B, C, D, E, or F")
+
+        if difficulty not in {"Easy", "Medium", "Hard"}:
+            errors.append("Difficulty must be Easy, Medium, or Hard")
+
+        submission_days_raw = values.get("Submission Days", "")
+        submission_days = None
+        if submission_days_raw:
+            try:
+                submission_days = int(submission_days_raw)
+            except ValueError:
+                errors.append("Submission Days must be an integer")
+            if submission_days is not None and submission_days < 1:
+                errors.append("Submission Days must be at least 1")
+        record["submission_days"] = submission_days
+
+        # duplicate detection within sheet
+        if subject_code and title:
+            key = (subject_code, record["title"])
+            if key in seen:
+                errors.append("Duplicate practical in this sheet")
+            else:
+                seen.add(key)
+
+        if errors:
+            record.update({"validation_status": "Error", "error_message": "; ".join(errors), "ready": False})
+        else:
+            record.update({"validation_status": "Valid", "error_message": "", "ready": True})
+        preview.append(record)
+
+    return preview
+
+
+def import_practicals_from_dataframe(rows: pd.DataFrame, db: Session, actor_id: int, faculty_id: int) -> dict[str, int]:
+    """Import validated practical rows scoped to the faculty member's assigned subjects.
+
+    Auto-assigns the next practical_number per subject and sets created_by to the faculty member.
+    """
+    preview = validate_practical_import(rows, db, faculty_id)
+    summary = {"imported": 0, "failed": 0, "skipped": 0}
+    subject_by_code = {subject.code: subject.id for subject in db.scalars(select(Subject))}
+
+    for index, row in rows.fillna("").iterrows():
+        record = preview[index]
+        if not record.get("ready", False):
+            summary["skipped"] += 1
+            continue
+        values = {key: str(value).strip() if isinstance(value, str) else str(value).strip() for key, value in row.items()}
+        subject_code = values.get("Subject Code", "")
+        subject_id = subject_by_code.get(subject_code)
+        if subject_id is None:
+            summary["failed"] += 1
+            continue
+        title = values.get("Practical Title", "")
+        submission_days_raw = values.get("Submission Days", "")
+        submission_days = int(submission_days_raw) if submission_days_raw else 7
+        submission_date_raw = values.get("Submission Date", "")
+        submission_date = None
+        if submission_date_raw:
+            try:
+                submission_date = date.fromisoformat(str(submission_date_raw).strip())
+            except ValueError:
+                submission_date = None
+        practical = Practical(
+            subject_id=subject_id,
+            practical_number=next_practical_number(db, subject_id),
+            title=title,
+            description=values.get("Description", ""),
+            learning_outcome=values.get("Learning Outcome", ""),
+            difficulty=values.get("Difficulty", "Medium"),
+            max_marks=100,
+            grade=values.get("Grade", "B").upper(),
+            submission_days=int(submission_days),
+            submission_date=submission_date,
+            created_by=actor_id,
+        )
+        db.add(practical)
+        audit(db, actor_id, "BULK_IMPORT_PRACTICALS", "Practical", None, f"{subject_code}:{title}")
+        summary["imported"] += 1
+    db.commit()
+    return summary
+
+
+# --------------------------------------------------------------------------
 # Guarded master-data deletion (Administrator)
 # --------------------------------------------------------------------------
 
@@ -617,6 +822,72 @@ def delete_user(db: Session, user_id: int, actor_id: int) -> None:
         raise ValueError("Cannot delete a user who published evaluations. Deactivate the account instead.")
     audit(db, actor_id, "DELETE_USER", "User", user.id, user.username)
     db.delete(user)
+    db.commit()
+
+
+# --------------------------------------------------------------------------
+# Programme (course) master data management (Administrator)
+# --------------------------------------------------------------------------
+
+
+def create_program(db: Session, code: str, name: str, duration_months: int = 24, total_semesters: int = 4, actor_id: int = 0) -> Program:
+    """Create a new programme (course), e.g. BCA, MCA, M.Sc.IT, PGDCA."""
+    code = code.strip().upper()
+    name = name.strip()
+    if not code or not name:
+        raise ValueError("Programme code and name are required.")
+    existing = db.scalar(select(Program).where((Program.code == code) | (Program.name == name)))
+    if existing:
+        raise ValueError("A programme with that code or name already exists.")
+    program = Program(code=code, name=name, duration_months=int(duration_months), total_semesters=int(total_semesters))
+    db.add(program)
+    audit(db, actor_id, "CREATE_PROGRAM", "Program", None, f"{code}:{name}")
+    db.commit()
+    db.refresh(program)
+    return program
+
+
+def update_program(db: Session, program_id: int, actor_id: int, **fields) -> Program:
+    """Update an existing programme's code/name/duration fields."""
+    program = db.get(Program, program_id)
+    if not program:
+        raise ValueError("Programme not found.")
+    if "code" in fields:
+        new_code = fields["code"].strip().upper()
+        if not new_code:
+            raise ValueError("Programme code is required.")
+        dup = db.scalar(select(Program).where(Program.code == new_code, Program.id != program_id))
+        if dup:
+            raise ValueError("That programme code is already in use.")
+        program.code = new_code
+    if "name" in fields:
+        new_name = fields["name"].strip()
+        if not new_name:
+            raise ValueError("Programme name is required.")
+        dup = db.scalar(select(Program).where(Program.name == new_name, Program.id != program_id))
+        if dup:
+            raise ValueError("That programme name is already in use.")
+        program.name = new_name
+    if "duration_months" in fields:
+        program.duration_months = int(fields["duration_months"])
+    if "total_semesters" in fields:
+        program.total_semesters = int(fields["total_semesters"])
+    audit(db, actor_id, "UPDATE_PROGRAM", "Program", program.id, f"{program.code}:{program.name}")
+    db.commit()
+    db.refresh(program)
+    return program
+
+
+def delete_program(db: Session, program_id: int, actor_id: int) -> None:
+    """Delete a programme. Cannot delete a programme with enrolled students."""
+    program = db.get(Program, program_id)
+    if not program:
+        raise ValueError("Programme not found.")
+    student_count = db.scalar(select(func.count(Student.id)).where(Student.program_id == program_id)) or 0
+    if student_count:
+        raise ValueError(f"Cannot delete a programme that has {student_count} enrolled student(s).")
+    audit(db, actor_id, "DELETE_PROGRAM", "Program", program.id, f"{program.code}:{program.name}")
+    db.delete(program)
     db.commit()
 
 

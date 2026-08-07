@@ -3,21 +3,26 @@ import streamlit as st
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from auth import hash_password
-from models import Department, Role, Subject, User
+from models import Department, Permission, Program, Role, Subject, User
 from reports import excel_report, marks_dataframe, pdf_report
 from services import (
     assign_faculty_subjects,
     audit,
     build_bulk_import_template,
     build_subject_import_template,
+    create_program,
     delete_department,
+    delete_program,
     delete_subject,
     delete_user,
     import_bulk_users_from_dataframe,
     import_subjects_from_dataframe,
+    update_program,
     validate_bulk_user_import,
     validate_subject_import,
 )
+from services import ensure_role, ensure_permission, grant_role_permission
+from rbac import has_permission
 
 
 def _roles(db) -> dict[int, str]:
@@ -107,6 +112,65 @@ def _department_crud(db, user_id: int) -> None:
                 try:
                     delete_department(db, selected, user_id)
                     st.success("Department deleted.")
+                    _trigger_refresh()
+                except ValueError as error:
+                    st.error(str(error))
+
+
+def _program_crud(db, user_id: int) -> None:
+    st.subheader("Programme (course) master data")
+    programs = list(db.scalars(select(Program).order_by(Program.code)))
+    if programs:
+        st.dataframe(
+            pd.DataFrame(
+                [{"Code": item.code, "Name": item.name, "Duration (months)": item.duration_months, "Semesters": item.total_semesters, "Enrolled students": len(item.students)} for item in programs]
+            ),
+            hide_index=True, use_container_width=True,
+        )
+    with st.form("add_program", clear_on_submit=True):
+        st.caption("Add programme")
+        code = st.text_input("Programme code (e.g. MCA)")
+        name = st.text_input("Programme name")
+        duration_months = st.number_input("Duration (months)", min_value=1, max_value=72, value=24)
+        total_semesters = st.number_input("Total semesters", min_value=1, max_value=12, value=4)
+        if st.form_submit_button("Add programme"):
+            try:
+                p = create_program(db, code, name, int(duration_months), int(total_semesters), actor_id=user_id)
+                _commit_with_audit(db, user_id, "CREATE_PROGRAM", "Program", p.id, p.code)
+                st.success("Programme added.")
+                _trigger_refresh()
+            except ValueError as error:
+                st.error(str(error))
+            except IntegrityError:
+                db.rollback(); st.error("That programme code or name already exists.")
+    if programs:
+        update_column, delete_column = st.columns(2)
+        with update_column:
+            labels = {item.id: item.code for item in programs}
+            selected = st.selectbox("Update programme", list(labels), format_func=labels.get, key="update_program_select")
+            program = db.get(Program, selected)
+            with st.form("update_program", clear_on_submit=True):
+                edited_code = st.text_input("Code", value=program.code)
+                edited_name = st.text_input("Name", value=program.name)
+                edited_duration = st.number_input("Duration (months)", min_value=1, max_value=72, value=program.duration_months)
+                edited_semesters = st.number_input("Total semesters", min_value=1, max_value=12, value=program.total_semesters)
+                if st.form_submit_button("Save changes"):
+                    try:
+                        p = update_program(db, program.id, user_id, code=edited_code, name=edited_name, duration_months=int(edited_duration), total_semesters=int(edited_semesters))
+                        _commit_with_audit(db, user_id, "UPDATE_PROGRAM", "Program", p.id, p.code)
+                        st.success("Programme updated.")
+                        _trigger_refresh()
+                    except ValueError as error:
+                        st.error(str(error))
+                    except IntegrityError:
+                        db.rollback(); st.error("That programme code or name already exists.")
+        with delete_column:
+            st.caption("Delete programme")
+            st.caption("A programme with enrolled students cannot be deleted.")
+            if st.button("Delete selected programme", type="secondary"):
+                try:
+                    delete_program(db, selected, user_id)
+                    st.success("Programme deleted.")
                     _trigger_refresh()
                 except ValueError as error:
                     st.error(str(error))
@@ -403,10 +467,18 @@ def _bulk_import_ui(db, user_id: int) -> None:
 
 def administrator_page(db, user: User) -> None:
     st.title("Administrator workspace")
+    # enforce admin-level permission
+    if not has_permission(db, user, "admin.access"):
+        st.error("You do not have permission to access the Administrator page.")
+        return
     st.caption("Manage master data, faculty, user accounts, and evaluation reports.")
-    master_tab, faculty_tab, users_tab, import_tab, reports_tab = st.tabs(["Master data", "Faculty", "Users", "Import", "Reports"])
+    master_tab, faculty_tab, users_tab, import_tab, reports_tab, perm_tab = st.tabs(["Master data", "Faculty", "Users", "Import", "Reports", "Permissions"])
+    with perm_tab:
+        _permissions_ui(db, user.id)
     with master_tab:
-        department_tab, subject_tab = st.tabs(["Departments", "Subjects"])
+        program_tab, department_tab, subject_tab = st.tabs(["Programmes", "Departments", "Subjects"])
+        with program_tab:
+            _program_crud(db, user.id)
         with department_tab:
             _department_crud(db, user.id)
         with subject_tab:
@@ -419,3 +491,36 @@ def administrator_page(db, user: User) -> None:
         _bulk_import_ui(db, user.id)
     with reports_tab:
         _reports_ui(db)
+
+
+def _permissions_ui(db, user_id: int) -> None:
+    st.subheader("Permissions management")
+    st.caption("Create permissions and assign them to roles.")
+    perms = list(db.scalars(select(Permission).order_by(Permission.code)))
+    roles = _roles(db)
+    # create permission
+    with st.form("create_permission", clear_on_submit=True):
+        code = st.text_input("Permission code (e.g. faculty.access)")
+        description = st.text_input("Description")
+        if st.form_submit_button("Create permission"):
+            if not code.strip():
+                st.error("Enter a permission code.")
+            else:
+                try:
+                    p = ensure_permission(db, code.strip(), description.strip())
+                    _commit_with_audit(db, user_id, "CREATE_PERMISSION", "Permission", p.id, p.code)
+                    st.success("Permission created.")
+                    _trigger_refresh()
+                except Exception as e:
+                    db.rollback(); st.error(str(e))
+    # assign permission
+    if perms and roles:
+        st.markdown("---")
+        perm_map = {p.id: p.code for p in perms}
+        selected_perm = st.selectbox("Permission to assign", list(perm_map), format_func=lambda v: perm_map[v])
+        selected_roles = st.multiselect("Assign to roles", list(roles), format_func=roles.get)
+        if st.button("Grant permission"):
+            for rid in selected_roles:
+                grant_role_permission(db, db.get(Role, rid), db.get(Permission, selected_perm))
+            _commit_with_audit(db, user_id, "GRANT_PERMISSION", "Permission", selected_perm, f"roles={selected_roles}")
+            st.success("Permission granted to selected roles.")

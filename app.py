@@ -1,18 +1,22 @@
 from collections import Counter
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy import select
-from database import SessionLocal, init_db
+from database import SessionLocal, init_db, run_migrations
 from auth import authenticate
 from auth_ui import render_login, handle_reset
 from models import Assignment, Student, Submission, User
 from admin_ui import administrator_page
 from faculty_ui import faculty_page
 from services import dashboard_counts, save_submission
+from config import settings
+from session_manager import verify_session_token
+
+
 
 st.set_page_config(page_title="TPEMS | Gujarat Vidyapith", page_icon="🎓", layout="wide")
 
@@ -282,39 +286,15 @@ def render_footer() -> None:
     )
 
 
-init_db()
+run_migrations()
 if "user_id" not in st.session_state:
+
     st.session_state.user_id = None
 
 
 def login() -> None:
-    st.markdown("<div class='login-page' style='padding-top:0; padding-bottom:0;'>", unsafe_allow_html=True)
-    with st.container():
-      cols = st.columns([1, 5])
-      with cols[0]:
-        st.image("assets/gujarat-vidyapith-logo.png", width=56)
-      with cols[1]:
-        st.markdown(
-          """
-          <div class="login-card" style="padding:0.6rem; margin-bottom:0;">
-            <div style="display:block; margin-bottom:0.25rem;">
-              <h2 style="margin:0;">Sign in to TPEMS</h2>
-              <p style="margin:.2rem 0 0; color:var(--muted); font-size:0.98rem;">Secure access to Gujarat Vidyapith's practical evaluation management.</p>
-            </div>
-          """,
-          unsafe_allow_html=True,
-        )
-        with st.form("login"):
-          username = st.text_input("Username")
-          password = st.text_input("Password", type="password")
-          if st.form_submit_button("Sign in", type="primary"):
-            with SessionLocal() as db:
-              user = authenticate(db, username, password)
-              if user:
-                st.session_state.user_id = user.id
-                st.rerun()
-              st.error("Invalid credentials")
-        st.markdown("</div>", unsafe_allow_html=True)
+    render_login()
+
 
 
 def card(label: str, value: object) -> None:
@@ -874,20 +854,51 @@ def student_page(db, student: Student) -> None:
 
 
 with SessionLocal() as db:
-    if not st.session_state.user_id:
+    # Restore session from signed query token on browser reload if present
+    if not st.session_state.get("user_id"):
+        session_token = st.query_params.get("session")
+        if session_token:
+            payload = verify_session_token(session_token)
+            if payload:
+                restored_user = db.get(User, payload["user_id"])
+                if restored_user and restored_user.is_active and not restored_user.account_locked:
+                    st.session_state.user_id = restored_user.id
+                    st.session_state.name = restored_user.full_name
+                    st.session_state.role = restored_user.role.name
+                    st.session_state.email = restored_user.email
+                    st.session_state.department = getattr(restored_user, 'department', None)
+                    st.session_state.login_time = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+            else:
+                st.query_params.clear()
+
+    if not st.session_state.get("user_id"):
       # handle password reset token in query params
       def _get_query_params():
         return st.query_params
 
       params = _get_query_params()
       if "reset" in params:
-        handle_reset(params.get("reset")[0])
+        handle_reset(params.get("reset"))
       else:
         render_login()
     else:
+        login_time_str = st.session_state.get("login_time")
+        if login_time_str:
+            try:
+                login_time = datetime.fromisoformat(login_time_str)
+                if (datetime.now(timezone.utc).replace(tzinfo=None) - login_time).total_seconds() > settings.session_timeout_minutes * 60:
+
+                    st.session_state.clear()
+                    st.query_params.clear()
+                    st.warning("Your session has timed out due to inactivity. Please sign in again.")
+                    st.rerun()
+            except Exception:
+                pass
         user = db.get(User, st.session_state.user_id)
         if not user:
-            st.session_state.user_id = None; st.rerun()
+            st.session_state.user_id = None
+            st.query_params.clear()
+            st.rerun()
       # brand header removed
         with st.sidebar:
           st.markdown("**Transparent Practical Evaluation**")
@@ -908,7 +919,10 @@ with SessionLocal() as db:
           st.markdown("</div>", unsafe_allow_html=True)
           st.markdown("---")
           if st.button("Sign out"):
-            st.session_state.clear(); st.rerun()
+            st.session_state.clear()
+            st.query_params.clear()
+            st.rerun()
+
         if page == "Dashboard" and user.role.name == "Student" and user.student:
             student_dashboard(db, user.student)
         elif page == "Dashboard":

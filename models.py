@@ -1,8 +1,13 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 
 
 class Role(Base):
@@ -46,8 +51,20 @@ class Student(Base):
     enrollment_no: Mapped[str] = mapped_column(String(40), unique=True, index=True)
     semester: Mapped[int] = mapped_column(Integer)
     program: Mapped[str] = mapped_column(String(80), default="MCA")
+    program_id: Mapped[int | None] = mapped_column(ForeignKey("programs.id"), nullable=True)
     user: Mapped[User] = relationship(back_populates="student")
+    program_ref: Mapped["Program | None"] = relationship(back_populates="students")
     assignments: Mapped[list["Assignment"]] = relationship(back_populates="student")
+
+
+class Program(Base):
+    __tablename__ = "programs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(30), unique=True)
+    name: Mapped[str] = mapped_column(String(150), unique=True)
+    duration_months: Mapped[int] = mapped_column(Integer, default=24)
+    total_semesters: Mapped[int] = mapped_column(Integer, default=4)
+    students: Mapped[list["Student"]] = relationship(back_populates="program_ref")
 
 
 class Subject(Base):
@@ -69,7 +86,7 @@ class FacultySubject(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     faculty_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     subject_id: Mapped[int] = mapped_column(ForeignKey("subjects.id"), index=True)
-    assigned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    assigned_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     assigned_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     faculty: Mapped[User] = relationship(back_populates="faculty_subjects", foreign_keys=[faculty_id])
     subject: Mapped[Subject] = relationship(back_populates="faculty_subjects", foreign_keys=[subject_id])
@@ -100,7 +117,7 @@ class Assignment(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     practical_id: Mapped[int] = mapped_column(ForeignKey("practicals.id"), index=True)
     student_id: Mapped[int] = mapped_column(ForeignKey("students.id"), index=True)
-    assigned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    assigned_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     deadline: Mapped[datetime] = mapped_column(DateTime)
     status: Mapped[str] = mapped_column(String(25), default="Assigned")
     practical: Mapped[Practical] = relationship(back_populates="assignments")
@@ -118,7 +135,7 @@ class Submission(Base):
     branch: Mapped[str] = mapped_column(String(100), default="main")
     documentation: Mapped[str] = mapped_column(Text, default="")
     remarks: Mapped[str] = mapped_column(Text, default="")
-    submitted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     is_late: Mapped[bool] = mapped_column(Boolean, default=False)
     assignment: Mapped[Assignment] = relationship(back_populates="submission")
     evaluation: Mapped["Evaluation | None"] = relationship(back_populates="submission", uselist=False, cascade="all, delete-orphan")
@@ -140,7 +157,7 @@ class Evaluation(Base):
     remarks: Mapped[str] = mapped_column(Text, default="")
     suggestions: Mapped[str] = mapped_column(Text, default="")
     published: Mapped[bool] = mapped_column(Boolean, default=False)
-    evaluated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     submission: Mapped[Submission] = relationship(back_populates="evaluation")
 
 
@@ -152,7 +169,22 @@ class AuditLog(Base):
     entity: Mapped[str] = mapped_column(String(80))
     entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     details: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
+
+
+class Permission(Base):
+    __tablename__ = "permissions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(80), unique=True)
+    description: Mapped[str] = mapped_column(String(255), default="")
+
+
+class RolePermission(Base):
+    __tablename__ = "role_permissions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), index=True)
+    permission_id: Mapped[int] = mapped_column(ForeignKey("permissions.id"), index=True)
+
 
 
 class LoginLog(Base):
@@ -161,7 +193,7 @@ class LoginLog(Base):
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     username: Mapped[str | None] = mapped_column(String(120), nullable=True)
     role: Mapped[str | None] = mapped_column(String(60), nullable=True)
-    login_time: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    login_time: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     logout_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(120), nullable=True)
     browser: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -174,7 +206,7 @@ class PasswordReset(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     token: Mapped[str] = mapped_column(String(128), unique=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     used: Mapped[bool] = mapped_column(Boolean, default=False)
 
@@ -182,6 +214,7 @@ class PasswordReset(Base):
 all_models = (
     Role,
     Department,
+    Program,
     User,
     Student,
     Subject,

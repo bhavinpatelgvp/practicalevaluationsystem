@@ -10,6 +10,7 @@ from reports import excel_report, pdf_report
 from services import (
     assign_faculty_subjects,
     assign_practical,
+    build_practical_import_template,
     create_practical,
     delete_department,
     delete_practical,
@@ -17,11 +18,13 @@ from services import (
     delete_user,
     faculty_practicals,
     grade_submission,
+    import_practicals_from_dataframe,
     save_submission,
     subjects_for_faculty,
     submissions_for_faculty,
     update_practical,
     validate_bulk_user_import,
+    validate_practical_import,
 )
 
 
@@ -235,3 +238,47 @@ def test_validate_bulk_user_import_marks_missing_and_duplicate_rows():
     assert preview[1]["ready"] is False
     assert "required" in preview[1]["reason"].lower()
     assert preview[2]["duplicate"] is True
+
+
+def test_build_practical_import_template_returns_bytes():
+    template = build_practical_import_template()
+    assert len(template) > 0
+
+
+def test_validate_practical_import_scopes_to_assigned_subjects():
+    db = setup_db()
+    world = seed_world(db)
+    assign_faculty_subjects(db, world["faculty"].id, [world["subject"].id], world["admin"].id)
+    rows = pd.DataFrame(
+        [
+            {"Subject Code": "CS1", "Practical Title": "Lab 1", "Description": "d", "Learning Outcome": "o", "Difficulty": "Medium", "Grade": "B", "Submission Days": 7, "Submission Date": ""},
+            {"Subject Code": "CS2", "Practical Title": "Other", "Description": "d", "Learning Outcome": "o", "Difficulty": "Medium", "Grade": "A", "Submission Days": 5, "Submission Date": ""},
+            {"Subject Code": "CS1", "Practical Title": "", "Description": "d", "Learning Outcome": "o", "Difficulty": "Medium", "Grade": "B", "Submission Days": 7, "Submission Date": ""},
+        ]
+    )
+    preview = validate_practical_import(rows, db, world["faculty"].id)
+    assert preview[0]["ready"] is True
+    assert preview[1]["ready"] is False
+    assert "not assigned" in preview[1]["error_message"]
+    assert preview[2]["ready"] is False
+
+
+def test_import_practicals_from_dataframe():
+    db = setup_db()
+    world = seed_world(db)
+    assign_faculty_subjects(db, world["faculty"].id, [world["subject"].id], world["admin"].id)
+    rows = pd.DataFrame(
+        [
+            {"Subject Code": "CS1", "Practical Title": "Lab 1", "Description": "d", "Learning Outcome": "o", "Difficulty": "Medium", "Grade": "B", "Submission Days": 7, "Submission Date": ""},
+            {"Subject Code": "CS1", "Practical Title": "Lab 2", "Description": "d", "Learning Outcome": "o", "Difficulty": "Hard", "Grade": "A", "Submission Days": 10, "Submission Date": ""},
+            {"Subject Code": "CS2", "Practical Title": "Other", "Description": "d", "Learning Outcome": "o", "Difficulty": "Easy", "Grade": "C", "Submission Days": 5, "Submission Date": ""},
+        ]
+    )
+    summary = import_practicals_from_dataframe(rows, db, world["faculty"].id, world["faculty"].id)
+    assert summary["imported"] == 2  # CS2 is not assigned so gets skipped
+    assert summary["skipped"] == 1
+    practicals = db.scalars(select(Practical)).all()
+    titles = {p.title for p in practicals}
+    assert titles == {"Lab 1", "Lab 2"}
+    numbers = {p.practical_number for p in practicals}
+    assert numbers == {1, 2}
