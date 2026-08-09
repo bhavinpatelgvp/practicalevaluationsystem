@@ -124,7 +124,27 @@ with SessionLocal() as db:
             st.session_state.clear()
             st.query_params.clear()
             st.rerun()
-
+        if page == "Dashboard":
+            if user.role.name == "Student":
+                if user.student:
+                    student_dashboard(db, user.student)
+                else:
+                    st.error("Your student profile is incomplete. Please contact the administrator.")
+            else:
+                dashboard(db, user)
+        elif page == "Administration" and user.role.name == "Administrator":
+            administrator_page(db, user)
+        elif page == "My subjects" and user.role.name == "Faculty":
+            faculty_page(db, user)
+        elif page == "Practicals" and user.role.name == "Student":
+            if user.student:
+                student_page(db, user.student)
+            else:
+                st.error("Your student profile is incomplete. Please contact the administrator.")
+        else:
+            st.error("No student profile is linked to this account.")
+            
+        with st.sidebar:
           st.markdown(
             """
             <div class="sidebar-footer">
@@ -136,16 +156,5 @@ with SessionLocal() as db:
             """,
             unsafe_allow_html=True,
           )
-        if page == "Dashboard" and user.role.name == "Student" and user.student:
-            student_dashboard(db, user.student)
-        elif page == "Dashboard":
-            dashboard(db, user)
-        elif page == "Administration" and user.role.name == "Administrator":
-            administrator_page(db, user)
-        elif page == "My subjects" and user.role.name == "Faculty":
-            faculty_page(db, user)
-        elif user.role.name == "Student" and user.student:
-            student_page(db, user.student)
-        else:
-            st.error("No student profile is linked to this account.")
+
         render_footer()

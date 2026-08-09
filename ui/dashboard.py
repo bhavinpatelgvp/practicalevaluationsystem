@@ -42,7 +42,9 @@ def _render_plot(fig, title: str | None = None) -> None:
         plot_bgcolor=colors["card"],
         font=dict(color=colors["text"], family="Inter, Arial, sans-serif"),
         legend=dict(title="", bgcolor="rgba(0,0,0,0)", orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
-        margin=dict(l=10, r=10, t=50, b=12),
+        margin=dict(l=10, r=10, t=50, b=40),
+        height=400,
+        bargap=0.5,
     )
     st.plotly_chart(
         fig,
@@ -111,7 +113,13 @@ def dashboard(db, user: User) -> None:
         search_term = st.text_input("Search by name, enrollment, subject, or status", placeholder="Type to filter instantly")
         status_filter = st.selectbox("Status", ["All", "Assigned", "Submitted", "Late", "Evaluated"], index=0)
 
+        from models.schema import Practical
+        from services.core_services import faculty_subject_ids
+        
         query = select(Assignment).join(Assignment.practical).join(Assignment.student).join(Student.user)
+        if user.role.name == "Faculty":
+            subject_ids = faculty_subject_ids(db, user.id)
+            query = query.where(Practical.subject_id.in_(subject_ids))
         assignments = db.scalars(query.order_by(Assignment.deadline)).all()
         filtered = []
         for assignment in assignments:
@@ -145,7 +153,14 @@ def dashboard(db, user: User) -> None:
             st.info("No matching practicals found.")
         return
 
-    base_assignments = db.scalars(select(Assignment).order_by(Assignment.assigned_at)).all()
+    from models.schema import Practical
+    from services.core_services import faculty_subject_ids
+    
+    query = select(Assignment).order_by(Assignment.assigned_at)
+    if user.role.name == "Faculty":
+        subject_ids = faculty_subject_ids(db, user.id)
+        query = query.join(Assignment.practical).where(Practical.subject_id.in_(subject_ids))
+    base_assignments = db.scalars(query).all()
     if not base_assignments:
         st.info("No practical assignments have been created yet. Create data to populate the dashboard.")
         return

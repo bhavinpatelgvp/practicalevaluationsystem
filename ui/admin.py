@@ -368,50 +368,92 @@ def _user_crud(db, user_id: int) -> None:
             ),
             hide_index=True, use_container_width=True,
         )
-    with st.form("create_user", clear_on_submit=True):
-        st.caption("Create user account")
-        username = st.text_input("Username")
-        full_name = st.text_input("Full name")
-        email = st.text_input("Email")
-        password = st.text_input("Temporary password", type="password")
-        role_id = st.selectbox("Role", list(roles), format_func=roles.get, key="create_user_role")
+    st.caption("Create user account")
+    selected_role_id = st.selectbox("Role", list(roles), format_func=roles.get, key="create_user_role_select")
+    is_student = roles.get(selected_role_id) == "Student"
+    
+    with st.form("create_user", clear_on_submit=False):
+        username = st.text_input("Username / Enrollment No" if is_student else "Username", key="cu_username")
+        full_name = st.text_input("Full name", key="cu_full_name")
+        email = st.text_input("Email", key="cu_email")
+        password = st.text_input("Temporary password", type="password", key="cu_password")
+        
+        if is_student:
+            st.markdown("---")
+            st.caption("Student profile details")
+            program = st.text_input("Programme (e.g. MCA)", value="MCA", key="cu_program")
+            semester = st.number_input("Semester", min_value=1, max_value=10, value=1, key="cu_semester")
+            
         if st.form_submit_button("Create user"):
             if not all([username.strip(), full_name.strip(), email.strip(), password]):
                 st.error("Complete all fields.")
+            elif is_student and not program.strip():
+                st.error("Complete the programme field for the student profile.")
             else:
-                db.add(User(username=username.strip(), full_name=full_name.strip(), email=email.strip(), password_hash=hash_password(password), role_id=role_id))
+                user = User(username=username.strip(), full_name=full_name.strip(), email=email.strip(), password_hash=hash_password(password), role_id=selected_role_id)
+                db.add(user)
                 try:
-                    _commit_with_audit(db, user_id, "CREATE_USER", "User")
+                    db.flush()
+                    if is_student:
+                        from models.schema import Student
+                        db.add(Student(user_id=user.id, enrollment_no=username.strip(), semester=int(semester), program=program.strip()))
+                    _commit_with_audit(db, user_id, "CREATE_USER", "User", user.id)
                     st.success("User account created.")
+                    for key in ["cu_username", "cu_full_name", "cu_email", "cu_password", "cu_program", "cu_semester"]:
+                        if key in st.session_state:
+                            del st.session_state[key]
                     _trigger_refresh()
                 except IntegrityError:
-                    db.rollback(); st.error("That username or email already exists.")
+                    db.rollback()
+                    st.error("That username, enrollment number, or email already exists.")
     if users:
         update_column, delete_column = st.columns(2)
         with update_column:
             user_labels = {item.id: f"{item.username} · {roles[item.role_id]}" for item in users}
             selected = st.selectbox("Update user", list(user_labels), format_func=user_labels.get, key="update_user_select")
             target = db.get(User, selected)
-            with st.form("update_user", clear_on_submit=True):
-                edited_name = st.text_input("Full name", value=target.full_name)
-                edited_email = st.text_input("Email", value=target.email)
-                edited_active = st.checkbox("Active account", value=target.is_active)
+            with st.form("update_user", clear_on_submit=False):
+                edited_name = st.text_input("Full name", value=target.full_name, key=f"uu_name_{target.id}")
+                edited_email = st.text_input("Email", value=target.email, key=f"uu_email_{target.id}")
+                edited_active = st.checkbox("Active account", value=target.is_active, key=f"uu_active_{target.id}")
                 default_role_index = list(roles).index(target.role_id) if target.role_id in roles else 0
-                edited_role = st.selectbox("Role", list(roles), index=default_role_index, format_func=roles.get, key="update_user_role")
-                new_password = st.text_input("Reset password (leave blank to keep)", type="password")
+                edited_role = st.selectbox("Role", list(roles), index=default_role_index, format_func=roles.get, key=f"uu_role_{target.id}")
+                new_password = st.text_input("Reset password (leave blank to keep)", type="password", key=f"uu_pass_{target.id}")
+                
+                is_student_update = target.student is not None
+                if is_student_update:
+                    st.markdown("---")
+                    st.caption("Student profile details")
+                    edited_enrollment = st.text_input("Enrollment No", value=target.student.enrollment_no, key=f"uu_enroll_{target.id}")
+                    edited_program = st.text_input("Programme", value=target.student.program, key=f"uu_prog_{target.id}")
+                    edited_semester = st.number_input("Semester", min_value=1, max_value=10, value=target.student.semester, key=f"uu_sem_{target.id}")
+
                 if st.form_submit_button("Save changes"):
-                    target.full_name = edited_name.strip() or target.full_name
-                    target.email = edited_email.strip() or target.email
-                    target.is_active = edited_active
-                    target.role_id = edited_role
-                    if new_password:
-                        target.password_hash = hash_password(new_password)
-                    try:
-                        _commit_with_audit(db, user_id, "UPDATE_USER", "User", target.id)
-                        st.success("User updated.")
-                        _trigger_refresh()
-                    except IntegrityError:
-                        db.rollback(); st.error("That email is already in use by another account.")
+                    if is_student_update and not edited_program.strip():
+                        st.error("Programme cannot be empty for a student.")
+                    elif is_student_update and not edited_enrollment.strip():
+                        st.error("Enrollment number cannot be empty.")
+                    else:
+                        target.full_name = edited_name.strip() or target.full_name
+                        target.email = edited_email.strip() or target.email
+                        target.is_active = edited_active
+                        target.role_id = edited_role
+                        if is_student_update:
+                            target.student.enrollment_no = edited_enrollment.strip()
+                            target.student.program = edited_program.strip()
+                            target.student.semester = int(edited_semester)
+                        if new_password:
+                            target.password_hash = hash_password(new_password)
+                        try:
+                            _commit_with_audit(db, user_id, "UPDATE_USER", "User", target.id)
+                            st.success("User updated.")
+                            for key in [f"uu_name_{target.id}", f"uu_email_{target.id}", f"uu_active_{target.id}", f"uu_role_{target.id}", f"uu_pass_{target.id}", f"uu_enroll_{target.id}", f"uu_prog_{target.id}", f"uu_sem_{target.id}"]:
+                                if key in st.session_state:
+                                    del st.session_state[key]
+                            _trigger_refresh()
+                        except IntegrityError:
+                            db.rollback()
+                            st.error("That email or enrollment number is already in use.")
         with delete_column:
             st.caption("Delete user")
             st.caption("Users with practicals, evaluations, or a student profile must be deactivated instead.")
