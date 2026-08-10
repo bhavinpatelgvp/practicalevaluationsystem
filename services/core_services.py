@@ -148,7 +148,13 @@ def build_bulk_import_template(user_type: str) -> bytes:
     """Return an Excel template for the requested bulk-import type."""
     templates = {
         "student": pd.DataFrame([
-            {"Enrollment No": "E1001", "Roll No": "01", "Name": "Student Name", "Email": "student@example.com", "Mobile": "9876543210", "Course": "MCA", "Semester": "3", "Division": "A", "Batch": "B1"}
+            {
+                "Enrollment No.": "GVCS24001",
+                "Student Name": "Student Name",
+                "Email": "student@example.com",
+                "Programme": "MCA",
+                "Semester": 3,
+            }
         ]),
         "faculty": pd.DataFrame([
             {"Faculty ID": "F1001", "Name": "Faculty Name", "Email": "faculty@example.com", "Mobile": "9876543210", "Department": "Computer Science", "Designation": "Assistant Professor"}
@@ -170,15 +176,34 @@ def validate_bulk_user_import(rows: pd.DataFrame, user_type: str, db: Session) -
     if user_type not in {"student", "faculty", "admin"}:
         raise ValueError("Unsupported import type")
 
-    required_columns = {
-        "student": ["Enrollment No", "Name", "Email", "Mobile", "Course", "Semester", "Division", "Batch"],
-        "faculty": ["Faculty ID", "Name", "Email", "Mobile", "Department", "Designation"],
-        "admin": ["Employee ID", "Name", "Email", "Mobile", "Role"],
-    }[user_type]
-
-    missing_columns = [column for column in required_columns if column not in rows.columns]
-    if missing_columns:
-        raise ValueError(f"Missing columns: {', '.join(missing_columns)}")
+    if user_type == "student":
+        cols = set(rows.columns)
+        has_enrollment = "Enrollment No." in cols or "Enrollment No" in cols or "Enrollment" in cols
+        has_name = "Student Name" in cols or "Name" in cols
+        has_email = "Email" in cols
+        has_programme = "Programme" in cols or "Program" in cols or "Course" in cols
+        has_semester = "Semester" in cols
+        missing_cols = []
+        if not has_enrollment:
+            missing_cols.append("Enrollment No.")
+        if not has_name:
+            missing_cols.append("Student Name")
+        if not has_email:
+            missing_cols.append("Email")
+        if not has_programme:
+            missing_cols.append("Programme")
+        if not has_semester:
+            missing_cols.append("Semester")
+        if missing_cols:
+            raise ValueError(f"Missing columns: {', '.join(missing_cols)}")
+    else:
+        required_columns = {
+            "faculty": ["Faculty ID", "Name", "Email", "Mobile", "Department", "Designation"],
+            "admin": ["Employee ID", "Name", "Email", "Mobile", "Role"],
+        }[user_type]
+        missing_columns = [column for column in required_columns if column not in rows.columns]
+        if missing_columns:
+            raise ValueError(f"Missing columns: {', '.join(missing_columns)}")
 
     preview: list[dict[str, object]] = []
     seen_enrollment: set[str] = set()
@@ -200,35 +225,55 @@ def validate_bulk_user_import(rows: pd.DataFrame, user_type: str, db: Session) -
             preview.append(record)
             continue
 
-        required_field = None
         if user_type == "student":
-            required_field = values.get("Enrollment No") or values.get("Name") or values.get("Email")
-        elif user_type == "faculty":
-            required_field = values.get("Faculty ID") or values.get("Name") or values.get("Email")
-        else:
-            required_field = values.get("Employee ID") or values.get("Name") or values.get("Email")
-
-        if not required_field:
-            record.update({"status": "Error", "reason": "Missing mandatory fields", "ready": False})
-            preview.append(record)
-            continue
-
-        if user_type == "student":
-            enrollment = values.get("Enrollment No", "")
+            enrollment = values.get("Enrollment No.") or values.get("Enrollment No") or values.get("Enrollment", "")
+            student_name = values.get("Student Name") or values.get("Name", "")
             email = values.get("Email", "")
+            programme = values.get("Programme") or values.get("Program") or values.get("Course", "")
+            semester_raw = values.get("Semester", "")
+
+            errors = []
             if not enrollment:
-                record.update({"status": "Error", "reason": "Missing Enrollment No (required)", "ready": False})
+                errors.append("Missing Enrollment No. (required)")
             elif enrollment in seen_enrollment or db.scalar(select(User).where(User.username == enrollment)) is not None:
                 record.update({"status": "Warning", "reason": "Duplicate Enrollment No", "ready": False, "duplicate": True})
             else:
                 seen_enrollment.add(enrollment)
-            if email in seen_email or db.scalar(select(User).where(User.email == email)) is not None:
+
+            if not student_name:
+                errors.append("Missing Student Name")
+
+            if not email:
+                errors.append("Missing Email (required)")
+            elif email in seen_email or db.scalar(select(User).where(User.email == email)) is not None:
                 record.update({"status": "Warning", "reason": "Duplicate Email", "ready": False, "duplicate": True})
             else:
                 seen_email.add(email)
+
+            if not programme:
+                errors.append("Missing Programme")
+
+            if not semester_raw:
+                errors.append("Missing Semester")
+            else:
+                try:
+                    sem_int = int(float(str(semester_raw).strip()))
+                    if not 1 <= sem_int <= 12:
+                        errors.append("Semester must be between 1 and 12")
+                except (ValueError, TypeError):
+                    errors.append("Semester must be a valid number")
+
+            if errors:
+                record.update({"status": "Error", "reason": "; ".join(errors), "ready": False})
+
         elif user_type == "faculty":
             faculty_id = values.get("Faculty ID", "")
+            name = values.get("Name", "")
             email = values.get("Email", "")
+            if not (faculty_id or name or email):
+                record.update({"status": "Error", "reason": "Missing mandatory fields", "ready": False})
+                preview.append(record)
+                continue
             if not faculty_id:
                 record.update({"status": "Error", "reason": "Missing Faculty ID (required)", "ready": False})
             elif faculty_id in seen_employee or db.scalar(select(User).where(User.username == faculty_id)) is not None:
@@ -241,7 +286,12 @@ def validate_bulk_user_import(rows: pd.DataFrame, user_type: str, db: Session) -
                 seen_email.add(email)
         else:
             employee_id = values.get("Employee ID", "")
+            name = values.get("Name", "")
             email = values.get("Email", "")
+            if not (employee_id or name or email):
+                record.update({"status": "Error", "reason": "Missing mandatory fields", "ready": False})
+                preview.append(record)
+                continue
             if not employee_id:
                 record.update({"status": "Error", "reason": "Missing Employee ID (required)", "ready": False})
             elif employee_id in seen_employee or db.scalar(select(User).where(User.username == employee_id)) is not None:
@@ -270,9 +320,17 @@ def import_bulk_users_from_dataframe(rows: pd.DataFrame, user_type: str, db: Ses
             continue
         values = {key: str(value).strip() if isinstance(value, str) else str(value).strip() for key, value in row.items()}
         try:
-            username = values.get("Enrollment No") or values.get("Faculty ID") or values.get("Employee ID") or values.get("Email")
+            if user_type == "student":
+                username = values.get("Enrollment No.") or values.get("Enrollment No") or values.get("Enrollment", "")
+                full_name = values.get("Student Name") or values.get("Name", "")
+            elif user_type == "faculty":
+                username = values.get("Faculty ID") or values.get("Email", "")
+                full_name = values.get("Name", "")
+            else:
+                username = values.get("Employee ID") or values.get("Email", "")
+                full_name = values.get("Name", "")
+
             email = values.get("Email", "")
-            full_name = values.get("Name", "")
             password = f"Tmp!{secrets.token_urlsafe(8)}"
             if not username or not email or not full_name:
                 summary["failed"] += 1
@@ -292,9 +350,13 @@ def import_bulk_users_from_dataframe(rows: pd.DataFrame, user_type: str, db: Ses
             db.add(user)
             db.flush()
             if user_type == "student":
-                enrollment_no = values.get("Enrollment No", "")
-                semester = int(values.get("Semester", 1) or 1)
-                course_val = values.get("Course", "MCA")
+                enrollment_no = username
+                semester_raw = values.get("Semester", 1)
+                try:
+                    semester = int(float(str(semester_raw).strip()))
+                except (ValueError, TypeError):
+                    semester = 1
+                course_val = values.get("Programme") or values.get("Program") or values.get("Course", "MCA")
                 prog = db.scalar(select(Program).where((Program.code == course_val) | (Program.name == course_val)))
                 prog_id = prog.id if prog else None
                 prog_code = prog.code if prog else course_val
@@ -613,20 +675,17 @@ def delete_practical(db: Session, practical_id: int, actor_id: int) -> None:
 # Bulk practical import (Faculty, scoped to their assigned subjects)
 # --------------------------------------------------------------------------
 
-PRACTICAL_IMPORT_COLUMNS = [
-    "Subject Code",
-    "Practical Title",
-    "Description",
-    "Learning Outcome",
-    "Difficulty",
-    "Grade",
-    "Submission Days",
-    "Submission Date",
-]
+# Only these two columns are strictly required; the rest are optional
+PRACTICAL_IMPORT_REQUIRED_COLUMNS = ["Subject Code", "Practical Title"]
+PRACTICAL_IMPORT_COLUMNS = ["Subject Code", "Practical Title"]  # kept for backward compat alias
 
 
 def build_practical_import_template() -> bytes:
-    """Return an Excel template for bulk practical import."""
+    """Return an Excel template for bulk practical import.
+
+    Required columns: Subject Code, Practical Title.
+    Optional columns: Description, Learning Outcome, Difficulty, Submission Date.
+    """
     template = pd.DataFrame(
         [
             {
@@ -635,10 +694,16 @@ def build_practical_import_template() -> bytes:
                 "Description": "Implement and document a small REST API.",
                 "Learning Outcome": "Apply API design principles.",
                 "Difficulty": "Medium",
-                "Grade": "B",
-                "Submission Days": 7,
+                "Submission Date": "2024-12-31",
+            },
+            {
+                "Subject Code": "CS301",
+                "Practical Title": "Database Schema Design",
+                "Description": "Design and normalize a relational schema.",
+                "Learning Outcome": "Apply normalization principles.",
+                "Difficulty": "Hard",
                 "Submission Date": "",
-            }
+            },
         ]
     )
     workbook = BytesIO()
@@ -650,9 +715,11 @@ def build_practical_import_template() -> bytes:
 def validate_practical_import(rows: pd.DataFrame, db: Session, faculty_id: int) -> list[dict[str, object]]:
     """Validate bulk practical rows, scoped to the faculty member's assigned subjects.
 
+    Required columns: Subject Code, Practical Title.
+    Optional columns: Description, Learning Outcome, Difficulty, Submission Date.
     Returns preview-style records with a ready flag and error messages.
     """
-    missing_columns = [column for column in PRACTICAL_IMPORT_COLUMNS if column not in rows.columns]
+    missing_columns = [column for column in PRACTICAL_IMPORT_REQUIRED_COLUMNS if column not in rows.columns]
     if missing_columns:
         raise ValueError(f"Missing columns: {', '.join(missing_columns)}")
 
@@ -661,68 +728,57 @@ def validate_practical_import(rows: pd.DataFrame, db: Session, faculty_id: int) 
     subject_owner = {subject.code: subject.id for subject in db.scalars(select(Subject)) if subject.id in assigned}
 
     preview: list[dict[str, object]] = []
-    seen: set[tuple[str, int]] = set()  # (subject_code, title) to catch duplicates within the sheet
+    seen: set[tuple[str, str]] = set()  # (subject_code, title) to catch duplicates within the sheet
 
     for index, row in rows.fillna("").iterrows():
         values = {key: str(value).strip() if isinstance(value, str) else str(value).strip() for key, value in row.items()}
+        subject_code = values.get("Subject Code", "")
+        title = values.get("Practical Title", "")
+        difficulty = values.get("Difficulty", "Medium") or "Medium"
+        submission_date_raw = values.get("Submission Date", "")
+
         record: dict[str, object] = {
             "row": index + 2,
-            "subject_code": values.get("Subject Code", ""),
-            "title": values.get("Practical Title", ""),
-            "difficulty": values.get("Difficulty", "Medium"),
-            "grade": values.get("Grade", "B"),
-            "submission_days": values.get("Submission Days", ""),
+            "subject_code": subject_code,
+            "title": title,
+            "difficulty": difficulty,
+            "submission_date": submission_date_raw,
             "validation_status": "Valid",
             "error_message": "",
             "ready": True,
         }
+
         if not any(values.values()):
             record.update({"validation_status": "Error", "error_message": "Empty row", "ready": False})
             preview.append(record)
             continue
 
         errors: list[str] = []
-        subject_code = values.get("Subject Code", "")
-        title = values.get("Practical Title", "")
-        grade = values.get("Grade", "B").upper()
-        difficulty = values.get("Difficulty", "Medium")
 
         if not subject_code:
             errors.append("Subject Code is required")
         elif subject_code not in subject_map:
-            errors.append("Subject does not exist")
+            errors.append("Subject does not exist in the system")
         elif subject_code not in subject_owner:
-            errors.append("Subject is not assigned to you")
-        else:
-            record["subject_code"] = subject_code
+            errors.append(f"Subject '{subject_code}' is not assigned to you")
 
         if not title:
             errors.append("Practical Title is required")
         elif len(title) > 200:
             errors.append("Practical Title exceeds 200 characters")
-        else:
-            record["title"] = title
 
-        if grade not in VALID_GRADES:
-            errors.append("Grade must be one of A, B, C, D, E, or F")
+        if difficulty and difficulty not in {"Easy", "Medium", "Hard"}:
+            errors.append("Difficulty must be Easy, Medium, or Hard (leave blank for Medium)")
 
-        if difficulty not in {"Easy", "Medium", "Hard"}:
-            errors.append("Difficulty must be Easy, Medium, or Hard")
-
-        submission_days_raw = values.get("Submission Days", "")
-        submission_days = None
-        if submission_days_raw:
+        if submission_date_raw:
             try:
-                submission_days = int(submission_days_raw)
+                date.fromisoformat(submission_date_raw)
             except ValueError:
-                errors.append("Submission Days must be an integer")
-            if submission_days is not None and submission_days < 1:
-                errors.append("Submission Days must be at least 1")
-        record["submission_days"] = submission_days
+                errors.append("Submission Date must be in YYYY-MM-DD format (e.g. 2024-12-31) or left blank")
 
-        # duplicate detection within sheet
+        # duplicate detection within the uploaded sheet
         if subject_code and title:
-            key = (subject_code, record["title"])
+            key = (subject_code, title)
             if key in seen:
                 errors.append("Duplicate practical in this sheet")
             else:
@@ -730,8 +786,6 @@ def validate_practical_import(rows: pd.DataFrame, db: Session, faculty_id: int) 
 
         if errors:
             record.update({"validation_status": "Error", "error_message": "; ".join(errors), "ready": False})
-        else:
-            record.update({"validation_status": "Valid", "error_message": "", "ready": True})
         preview.append(record)
 
     return preview
@@ -741,6 +795,7 @@ def import_practicals_from_dataframe(rows: pd.DataFrame, db: Session, actor_id: 
     """Import validated practical rows scoped to the faculty member's assigned subjects.
 
     Auto-assigns the next practical_number per subject and sets created_by to the faculty member.
+    Grade defaults to 'O' (Outstanding) — can be updated per-submission during evaluation.
     """
     preview = validate_practical_import(rows, db, faculty_id)
     summary = {"imported": 0, "failed": 0, "skipped": 0}
@@ -758,8 +813,9 @@ def import_practicals_from_dataframe(rows: pd.DataFrame, db: Session, actor_id: 
             summary["failed"] += 1
             continue
         title = values.get("Practical Title", "")
-        submission_days_raw = values.get("Submission Days", "")
-        submission_days = int(submission_days_raw) if submission_days_raw else 7
+        difficulty = values.get("Difficulty", "").strip() or "Medium"
+        if difficulty not in {"Easy", "Medium", "Hard"}:
+            difficulty = "Medium"
         submission_date_raw = values.get("Submission Date", "")
         submission_date = None
         if submission_date_raw:
@@ -773,10 +829,10 @@ def import_practicals_from_dataframe(rows: pd.DataFrame, db: Session, actor_id: 
             title=title,
             description=values.get("Description", ""),
             learning_outcome=values.get("Learning Outcome", ""),
-            difficulty=values.get("Difficulty", "Medium"),
+            difficulty=difficulty,
             max_marks=100,
-            grade=values.get("Grade", "B").upper(),
-            submission_days=int(submission_days),
+            grade="A",  # default grade; updated by faculty during evaluation
+            submission_days=14,     # default deadline window; no longer imported from sheet
             submission_date=submission_date,
             created_by=actor_id,
         )
