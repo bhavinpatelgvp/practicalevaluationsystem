@@ -103,8 +103,7 @@ def _practical_management(db, user_id: int, subject_labels: dict[int, str]) -> N
         description = st.text_area("Description")
         learning_outcome = st.text_area("Learning outcome")
         difficulty = st.selectbox("Difficulty", ["Easy", "Medium", "Hard"], index=1)
-        grade = st.selectbox("Grade", VALID_GRADES, index=0)
-        submission_date = st.date_input("Submission date", value=date.today() + timedelta(days=7), min_value=date.today())
+        submission_date = st.date_input("Submission date (optional)", value=None, min_value=date.today())
         if st.form_submit_button("Create practical"):
             if not title.strip():
                 st.error("Enter a practical title.")
@@ -116,7 +115,7 @@ def _practical_management(db, user_id: int, subject_labels: dict[int, str]) -> N
                     description=description,
                     learning_outcome=learning_outcome,
                     difficulty=difficulty,
-                    grade=grade,
+                    grade="A",  # default; set per-student during evaluation
                     submission_date=submission_date,
                     creator_id=user_id,
                 )
@@ -141,13 +140,11 @@ def _practical_management(db, user_id: int, subject_labels: dict[int, str]) -> N
             edited_outcome = st.text_area("Learning outcome", value=selected.learning_outcome)
             difficulty_index = ["Easy", "Medium", "Hard"].index(selected.difficulty) if selected.difficulty in ["Easy", "Medium", "Hard"] else 1
             edited_difficulty = st.selectbox("Difficulty", ["Easy", "Medium", "Hard"], index=difficulty_index)
-            grade_index = VALID_GRADES.index(selected.grade) if selected.grade in VALID_GRADES else 0
-            edited_grade = st.selectbox("Grade", VALID_GRADES, index=grade_index)
 
             if selected.submission_date:
                 st.caption(f"Submission date is fixed at {selected.submission_date:%d %b %Y} to keep assigned deadlines immutable.")
             else:
-                st.caption("Submission date is not set; assignments fall back to the default submission window.")
+                st.caption("Submission date is not set; no deadline will be enforced.")
             if st.form_submit_button("Save practical changes"):
                 update_practical(
                     db,
@@ -157,7 +154,6 @@ def _practical_management(db, user_id: int, subject_labels: dict[int, str]) -> N
                     description=edited_description,
                     learning_outcome=edited_outcome,
                     difficulty=edited_difficulty,
-                    grade=edited_grade,
                 )
                 st.success("Practical updated.")
                 st.rerun()
