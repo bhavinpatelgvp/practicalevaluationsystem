@@ -807,13 +807,21 @@ def validate_practical_import(rows: pd.DataFrame, db: Session, faculty_id: int) 
             except ValueError:
                 errors.append("Submission Date must be in YYYY-MM-DD format (e.g. 2024-12-31) or left blank")
 
-        # duplicate detection within the uploaded sheet
+        # duplicate detection within the uploaded sheet and in the database
         if subject_code and title:
             key = (subject_code, title)
             if key in seen:
                 errors.append("Duplicate practical in this sheet")
             else:
                 seen.add(key)
+
+            if subject_code in subject_owner:
+                subj_id = subject_owner[subject_code]
+                exists_in_db = db.scalar(
+                    select(Practical.id).where(Practical.subject_id == subj_id, Practical.title == title)
+                )
+                if exists_in_db is not None:
+                    errors.append(f"Practical '{title}' already exists for subject '{subject_code}'")
 
         if errors:
             record.update({"validation_status": "Error", "error_message": "; ".join(errors), "ready": False})
@@ -844,6 +852,12 @@ def import_practicals_from_dataframe(rows: pd.DataFrame, db: Session, actor_id: 
             summary["failed"] += 1
             continue
         title = values.get("Practical Title", "")
+        # Check DB duplicate guard
+        existing = db.scalar(select(Practical.id).where(Practical.subject_id == subject_id, Practical.title == title))
+        if existing is not None:
+            summary["skipped"] += 1
+            continue
+
         difficulty = values.get("Difficulty", "").strip() or "Medium"
         if difficulty not in {"Easy", "Medium", "Hard"}:
             difficulty = "Medium"

@@ -8,7 +8,7 @@ from ui.faculty import faculty_page
 from ui.dashboard import dashboard, student_dashboard
 from ui.student import student_page
 from core.config import settings
-from core.session_manager import verify_session_token
+from core.session_manager import verify_session_token,create_session_token
 from core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -72,6 +72,41 @@ with SessionLocal() as db:
             else:
                 st.query_params.clear()
 
+    # Handle Google OAuth callback if code or error is present in query parameters
+    if not st.session_state.get("user_id"):
+        oauth_error_param = st.query_params.get("error")
+        if oauth_error_param:
+            err_desc = st.query_params.get("error_description") or oauth_error_param
+            st.session_state["google_auth_error"] = f"Google Sign-In failed: {err_desc}"
+            st.query_params.clear()
+            st.rerun()
+
+        auth_code = st.query_params.get("code")
+        if auth_code:
+            from services.oauth_service import exchange_code_for_user_info, authenticate_google_user
+            google_info, exchange_err = exchange_code_for_user_info(auth_code)
+            if google_info:
+                oauth_user, oauth_err = authenticate_google_user(db, google_info)
+                if oauth_user:
+                    logger.info("Google OAuth login successful", extra={"user_id": oauth_user.id, "role": oauth_user.role.name})
+                    st.session_state.user_id = oauth_user.id
+                    st.session_state.name = oauth_user.full_name
+                    st.session_state.role = oauth_user.role.name
+                    st.session_state.email = oauth_user.email
+                    st.session_state.department = getattr(oauth_user, "department", None)
+                    st.session_state.login_time = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+                    st.query_params.clear()
+                    st.query_params["session"] = create_session_token(oauth_user.id, oauth_user.role.name)
+                    st.rerun()
+                else:
+                    st.session_state["google_auth_error"] = oauth_err
+                    st.query_params.clear()
+                    st.rerun()
+            else:
+                st.session_state["google_auth_error"] = exchange_err or "Failed to exchange authorization code with Google."
+                st.query_params.clear()
+                st.rerun()
+
     if not st.session_state.get("user_id"):
       # handle password reset token in query params
       def _get_query_params():
@@ -108,7 +143,7 @@ with SessionLocal() as db:
             workspace_options = ["Dashboard", "Administration"]
             welcome = "Manages master data, faculty, and users."
           elif user.role.name == "Faculty":
-            workspace_options = ["My subjects"]
+            workspace_options = ["Dashboard", "My subjects"]
             welcome = "Works within the subjects assigned to you."
           else:
             workspace_options = ["Dashboard", "Practicals"]

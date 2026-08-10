@@ -70,19 +70,44 @@ def _bulk_practical_import(db, user_id: int) -> None:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         st.info("Required columns: **Subject Code**, **Practical Title**. Optional: Description, Learning Outcome, Difficulty (Easy/Medium/Hard), Submission Date (YYYY-MM-DD). Grade and Submission Days are no longer needed.")
-    uploaded = st.file_uploader("Choose Excel file", type=["xlsx", "xls"], key="practical_import_file")
+
+    if "bulk_practical_reset" not in st.session_state:
+        st.session_state["bulk_practical_reset"] = 0
+
+    uploader_key = f"practical_import_file_{st.session_state['bulk_practical_reset']}"
+    uploaded = st.file_uploader("Choose Excel file", type=["xlsx", "xls"], key=uploader_key)
     if uploaded is not None:
         try:
             rows = pd.read_excel(uploaded)
             preview = validate_practical_import(rows, db, user_id)
             valid_count = sum(1 for item in preview if item["ready"])
             bad_count = len(preview) - valid_count
-            st.success(f"Validated {len(preview)} row(s): {valid_count} ready, {bad_count} with errors.")
-            st.dataframe(pd.DataFrame(preview), hide_index=True, use_container_width=True)
-            if valid_count and st.button("Import validated practicals"):
-                summary = import_practicals_from_dataframe(rows, db, user_id, user_id)
-                st.success(f"Imported {summary['imported']} practical(s); skipped {summary['skipped']}; failed {summary['failed']}")
-                st.rerun()
+
+            # Summary metrics
+            mcol1, mcol2, mcol3 = st.columns(3)
+            with mcol1:
+                st.metric("Total rows", len(preview))
+            with mcol2:
+                st.metric("Ready to import", valid_count)
+            with mcol3:
+                st.metric("Rows with errors/duplicates", bad_count)
+
+            if bad_count:
+                st.warning(f"{bad_count} row(s) have issues (missing fields or already in database) and will be skipped.")
+                st.dataframe(pd.DataFrame([p for p in preview if not p["ready"]]), hide_index=True, use_container_width=True)
+
+            if valid_count == 0:
+                st.error("No new practicals to import. All items either have errors or are already present in the database.")
+            else:
+                btn_label = f"Import {valid_count} valid practical(s)" if bad_count == 0 else f"Import {valid_count} valid practical(s), skip {bad_count}"
+                if st.button(btn_label, type="primary"):
+                    summary = import_practicals_from_dataframe(rows, db, user_id, user_id)
+                    if summary["imported"] > 0:
+                        st.success(f"✅ Successfully imported **{summary['imported']}** practical(s). " + (f"Skipped {summary['skipped']} duplicate(s)." if summary['skipped'] else ""))
+                        st.session_state["bulk_practical_reset"] += 1
+                        st.rerun()
+                    else:
+                        st.warning(f"No new practicals were imported. All {summary['skipped']} practical(s) already exist in database.")
         except Exception as error:
             st.error(f"Import failed: {error}")
 
@@ -237,7 +262,7 @@ def _assignment_ui(db, user_id: int, subject_labels: dict[int, str]) -> None:
     students = list(db.scalars(student_query))
 
     if not students:
-        st.info(f"No students found enrolled in {chosen_program.code} - Semester {selected_semester}.")
+        st.info(f"No students found enrolled in {prog_code} - Semester {sem_val}.")
         return
 
     # Check unassigned vs assigned
@@ -248,14 +273,14 @@ def _assignment_ui(db, user_id: int, subject_labels: dict[int, str]) -> None:
     # Metrics summary
     mcol1, mcol2, mcol3 = st.columns(3)
     with mcol1:
-        st.metric(f"Total in {chosen_program.code} Sem {selected_semester}", len(students))
+        st.metric(f"Total in {prog_code} Sem {sem_val}", len(students))
     with mcol2:
         st.metric("Eligible to Assign", len(unassigned))
     with mcol3:
         st.metric("Already Assigned", len(already_assigned))
 
     if not unassigned:
-        st.success(f"This practical is already assigned to all {len(students)} enrolled student(s) in {chosen_program.code} Semester {selected_semester}.")
+        st.success(f"This practical is already assigned to all {len(students)} enrolled student(s) in {prog_code} Semester {sem_val}.")
     else:
         choices = {s.id: f"{s.enrollment_no} · {s.user.full_name}" for s in unassigned}
         scope = st.radio(

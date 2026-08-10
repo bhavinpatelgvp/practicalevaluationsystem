@@ -531,7 +531,9 @@ def _user_crud(db, user_id: int) -> None:
         )
 
     st.caption("Create user account")
-    selected_role_id = st.selectbox("Role", list(roles), format_func=roles.get, key="create_user_role_select")
+    student_role_id = next((r_id for r_id, r_name in roles.items() if r_name == "Student"), list(roles)[0] if roles else None)
+    default_role_idx = list(roles).index(student_role_id) if student_role_id in roles else 0
+    selected_role_id = st.selectbox("Role", list(roles), index=default_role_idx, format_func=roles.get, key="create_user_role_select")
     is_student = roles.get(selected_role_id) == "Student"
     programs = _program_labels(db)
     

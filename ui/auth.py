@@ -45,10 +45,41 @@ def render_login() -> None:
         #st.markdown("<div class='login-card'>", unsafe_allow_html=True)
         st.markdown("&nbsp;")
         st.markdown("### Sign in")
+
+        if "google_auth_error" in st.session_state:
+            st.error(st.session_state.pop("google_auth_error"))
+
+        # Google Sign-In
+        from services.oauth_service import is_google_auth_configured, get_google_auth_url
+
+        if is_google_auth_configured():
+            google_url = get_google_auth_url()
+            st.link_button(
+                "🌐 Sign in with Google",
+                google_url,
+                type="secondary",
+                use_container_width=True,
+                help="Sign in with your institutional Google Workspace account",
+            )
+            st.markdown(
+                "<div style='text-align: center; margin: 10px 0 14px 0; color: #888; font-size: 0.85rem;'>— OR SIGN IN WITH USERNAME & PASSWORD —</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            with st.expander("🌐 Sign in with Google (Configuration)", expanded=False):
+                st.caption(
+                    "Google OAuth is supported. To activate the **Sign in with Google** button, configure these environment variables:\n\n"
+                    "- `GOOGLE_CLIENT_ID`\n"
+                    "- `GOOGLE_CLIENT_SECRET`\n"
+                    "- `GOOGLE_REDIRECT_URI` *(default: `http://localhost:8501`)*\n"
+                    "- `GOOGLE_HOSTED_DOMAIN` *(optional, e.g. `gujaratvidyapith.org`)*"
+                )
+
         with st.form("loginform"):
-            username = _trim(st.text_input("Username or Email", placeholder="username or email"))
+            username = _trim(st.text_input("Email", placeholder="e.g. name@gujaratvidyapith.org"))
             password = st.text_input("Password", type="password")
-            role = st.selectbox("Role", options=["Select Role"] + ROLE_OPTIONS, index=0)
+            default_role_idx = ROLE_OPTIONS.index("Student") if "Student" in ROLE_OPTIONS else 0
+            role = st.selectbox("Role", options=ROLE_OPTIONS, index=default_role_idx)
             remember = st.checkbox("Remember me")
             cols = st.columns([3, 1])
             with cols[0]:
@@ -58,11 +89,9 @@ def render_login() -> None:
             if submitted:
                 # validations
                 if not username:
-                    st.error("Username is required.")
+                    st.error("Email is required.")
                 elif not password:
                     st.error("Password is required.")
-                elif role == "Select Role":
-                    st.error("Please select your role.")
                 else:
                     with SessionLocal() as db:
                         user = authenticate(db, username, password, role_name=role)
