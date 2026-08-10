@@ -1,6 +1,6 @@
 from email.message import EmailMessage
 import smtplib
-from config import settings
+from core.config import settings
 
 
 def send_html_email(recipient: str, subject: str, html_body: str) -> None:

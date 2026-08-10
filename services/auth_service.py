@@ -1,9 +1,20 @@
 import bcrypt
+import hashlib
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from models import Role, User, LoginLog, PasswordReset
-from datetime import datetime, timedelta
+from models.schema import Role, User, LoginLog, PasswordReset
+from datetime import datetime, timedelta, timezone
 import secrets
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def ensure_role(db, role_name: str):
+    # lazy import to avoid circular dependency between auth and services
+    from services.core_services import ensure_role as _ensure_role
+
+    return _ensure_role(db, role_name)
 
 
 MAX_FAILED_ATTEMPTS = 5
@@ -26,7 +37,7 @@ def record_login(db: Session, user: User | None, username: str, role: str | None
         user_id=user.id if user else None,
         username=username,
         role=role,
-        login_time=datetime.utcnow(),
+        login_time=utc_now(),
         ip_address=ip,
         browser=browser,
         os=os,
@@ -68,33 +79,47 @@ def authenticate(db: Session, username_or_email: str, password: str, role_name: 
             return None
     # success
     reset_failed_attempts(db, user)
-    user.last_login = datetime.utcnow()
+    user.last_login = utc_now()
     db.add(user)
     record_login(db, user, username_or_email, role_name, "success", ip, browser, os)
     return user
 
 
-def create_password_reset(db: Session, user: User) -> PasswordReset:
-    token = secrets.token_urlsafe(48)
-    now = datetime.utcnow()
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def create_password_reset(db: Session, user: User) -> tuple[PasswordReset, str]:
+    # Invalidate previous unused reset tokens for this user
+    existing = db.scalars(select(PasswordReset).where(PasswordReset.user_id == user.id, PasswordReset.used.is_(False))).all()
+    for old_pr in existing:
+        old_pr.used = True
+        db.add(old_pr)
+
+    raw_token = secrets.token_urlsafe(48)
+    token_hash = _hash_token(raw_token)
+    now = utc_now()
     expires = now + timedelta(minutes=RESET_TOKEN_TTL_MINUTES)
-    pr = PasswordReset(user_id=user.id, token=token, created_at=now, expires_at=expires, used=False)
+    pr = PasswordReset(user_id=user.id, token=token_hash, created_at=now, expires_at=expires, used=False)
     db.add(pr)
-    return pr
+    return pr, raw_token
 
 
 def verify_password_reset(db: Session, token: str) -> User | None:
-    pr = db.scalar(select(PasswordReset).where(PasswordReset.token == token, PasswordReset.used.is_(False)))
+    token_hash = _hash_token(token)
+    pr = db.scalar(select(PasswordReset).where(PasswordReset.token == token_hash, PasswordReset.used.is_(False)))
     if not pr:
         return None
-    if pr.expires_at < datetime.utcnow():
+    if pr.expires_at < utc_now():
         return None
     user = db.get(User, pr.user_id)
     return user
 
 
 def mark_password_reset_used(db: Session, token: str) -> None:
-    pr = db.scalar(select(PasswordReset).where(PasswordReset.token == token))
+    token_hash = _hash_token(token)
+    pr = db.scalar(select(PasswordReset).where(PasswordReset.token == token_hash))
     if pr:
         pr.used = True
         db.add(pr)
+

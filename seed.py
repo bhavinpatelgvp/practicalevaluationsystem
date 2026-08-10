@@ -1,16 +1,40 @@
 from datetime import date, timedelta
-from database import SessionLocal, init_db
-from auth import ensure_role, hash_password
-from models import Department, FacultySubject, Practical, Student, Subject, User
+from core.database import SessionLocal, init_db
+from services.core_services import ensure_role, ensure_permission, grant_role_permission
+from services.auth_service import hash_password
+from models.schema import Department, FacultySubject, Practical, Student, Subject, User
+
+LOGIN_ROLES = ["Administrator", "Faculty", "Student", "External Examiner", "Coordinator"]
+# permission_code -> (description, list of role names that should receive it)
+CORE_PERMISSIONS = {
+    "admin.access": ("Access administrator workspace and management features", ["Administrator"]),
+    "faculty.access": ("Access the faculty workspace and manage assigned subjects", ["Administrator", "Faculty"]),
+    "student.access": ("Access the student practicals and dashboard views", ["Administrator", "Student"]),
+}
 
 
 def seed() -> None:
     init_db()
+    already_seeded = False
     with SessionLocal() as db:
+        # Seed roles for every login role (idempotent).
+        roles = {name: ensure_role(db, name) for name in LOGIN_ROLES}
+
+        # Seed permissions and assign to roles (idempotent).
+        for code, (description, role_names) in CORE_PERMISSIONS.items():
+            perm = ensure_permission(db, code, description)
+            for role_name in role_names:
+                grant_role_permission(db, roles[role_name], perm)
+        db.commit()
+        print("Permissions synced:", ", ".join(CORE_PERMISSIONS))
+
+        # Only create demo data if the database is empty.
         if db.query(User).first():
-            print("Database already contains data")
+            db.close()
+            print("Database already contains data; permissions have been refreshed.")
             return
-        roles = {name: ensure_role(db, name) for name in ["Administrator", "Faculty", "Student"]}
+        already_seeded = True
+
         department = Department(name="Computer Science", code="CS")
         db.add(department); db.flush()
         admin = User(username="admin", full_name="System Administrator", email="admin@gujaratvidyapith.org", password_hash=hash_password("Admin@123"), role=roles["Administrator"])
@@ -27,6 +51,9 @@ def seed() -> None:
             db.add(Student(user=user, enrollment_no=f"GVCS23{index:03d}", semester=3, program="MCA"))
         db.commit()
         print("Seeded: admin/Admin@123, faculty/Faculty@123 (subject CS301 assigned), student1/Student@123")
+
+    if already_seeded:
+        print("Database populated with demo data.")
 
 
 if __name__ == "__main__":

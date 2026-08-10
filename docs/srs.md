@@ -1,16 +1,18 @@
 # System Requirements Specification
 
 ## Scope
+
 TPEMS manages practical assignment, student repository submission, faculty evaluation, result publication, auditability, and academic reporting for multiple programs, departments, and semesters.
 
 ## Actors
+
 - Administrator manages master data, users, and reports.
 - Faculty creates practicals, assigns them, monitors submissions, evaluates, and publishes marks.
 - Students view assignments, submit or update repositories before the deadline, and view published results.
 
 ## Functional requirements
 
-1. The system allows an administrator to create, update, and delete master data of Department, Faculty, Subject, subject wise Faculty and users.
+1. The system allows an administrator to create, update, and delete master data of Department,Programme,Faculty, Subject, subject wise Faculty and users.
 2. Every protected action is role checked and auditable.
 3. A practical assignment has immutable assignment time and a calculated deadline.
 4. One student has at most one submission per practical assignment.

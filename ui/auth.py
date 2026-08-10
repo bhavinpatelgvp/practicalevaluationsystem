@@ -1,10 +1,12 @@
 import streamlit as st
-from database import SessionLocal
-from auth import authenticate, create_password_reset, verify_password_reset, mark_password_reset_used, hash_password
-from email_service import send_html_email
+from core.database import SessionLocal
+from services.auth_service import authenticate, create_password_reset, verify_password_reset, mark_password_reset_used, hash_password
+from core.rbac import has_permission
+from services.email_service import send_html_email
+from core.session_manager import create_session_token
 from sqlalchemy import select
-from models import User
-from datetime import datetime
+from models.schema import User
+from datetime import datetime, timezone
 import re
 
 ROLE_OPTIONS = ["Administrator", "Faculty", "Student", "External Examiner", "Coordinator"]
@@ -67,13 +69,19 @@ def render_login() -> None:
                         if not user:
                             st.error("Invalid credentials.")
                         else:
+                            # check permission for selected role
+                            if role != "Administrator" and not has_permission(db, user, f"{role.lower()}.access"):
+                                st.error("You are not permitted to sign in for the selected role.")
+                                return
                             st.success("Login Successful. Redirecting to your dashboard...")
                             st.session_state.user_id = user.id
                             st.session_state.name = user.full_name
                             st.session_state.role = user.role.name
                             st.session_state.email = user.email
                             st.session_state.department = getattr(user, 'department', None)
-                            st.session_state.login_time = datetime.utcnow().isoformat()
+                            st.session_state.login_time = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+                            st.query_params["session"] = create_session_token(user.id, user.role.name)
+
                             _rerun()
         #st.markdown("</div>", unsafe_allow_html=True)
 
@@ -95,10 +103,11 @@ def render_login() -> None:
                             if not user:
                                 st.info("If the account exists, a reset link has been sent.")
                             else:
-                                pr = create_password_reset(db, user)
+                                pr, raw_token = create_password_reset(db, user)
                                 db.commit()
                                 # use a relative reset link query parameter; Streamlit URL building differs by deployment
-                                reset_url = f"?reset={pr.token}"
+                                reset_url = f"?reset={raw_token}"
+
                                 html = f"<p>Click the link to reset your password (valid for 30 minutes): <a href='{reset_url}'>Reset password</a></p>"
                                 try:
                                     send_html_email(user.email, "Password reset for TPEMS", html)

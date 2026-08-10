@@ -1,0 +1,12 @@
+.git
+.agents
+venv
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.db
+.env
+.env.*
+tests/
+.pytest_cache

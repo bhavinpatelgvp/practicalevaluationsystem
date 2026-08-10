@@ -1,17 +1,22 @@
+import pandas as pd
 import streamlit as st
 from datetime import date, timedelta
 from sqlalchemy import select
-from models import Assignment, Practical, Student, Submission, Subject
-from services import (
+from models.schema import Assignment, Practical, Student, Submission, Subject
+from services.core_services import (
     assign_practical,
+    build_practical_import_template,
     create_practical,
     delete_practical,
     faculty_practicals,
     grade_submission,
+    import_practicals_from_dataframe,
     subjects_for_faculty,
     submissions_for_faculty,
     update_practical,
+    validate_practical_import,
 )
+from core.rbac import has_permission
 
 VALID_GRADES = ["A", "B", "C", "D", "E", "F"]
 
@@ -22,6 +27,10 @@ def _subject_labels(subjects: list[Subject]) -> dict[int, str]:
 
 def faculty_page(db, user) -> None:
     st.title("Faculty workspace")
+    # require faculty access permission (administrators bypass)
+    if not (user and (user.role and user.role.name == "Administrator" or has_permission(db, user, "faculty.access"))):
+        st.error("You do not have permission to access the Faculty workspace.")
+        return
     subjects = subjects_for_faculty(db, user.id)
     if not subjects:
         st.info("No subjects have been assigned to you yet. Contact the administrator to assign subjects.")
@@ -50,11 +59,42 @@ def faculty_page(db, user) -> None:
         _evaluation_ui(db, user.id, subject_labels)
 
 
+def _bulk_practical_import(db, user_id: int) -> None:
+    st.subheader("Bulk import practicals")
+    st.caption("Upload an Excel file to create multiple practicals across your assigned subjects.")
+    with st.expander("Download sample template", expanded=False):
+        st.download_button(
+            "Download practical import template",
+            build_practical_import_template(),
+            file_name="practical_import_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        st.info("Required columns: Subject Code, Practical Title. Optional: Description, Learning Outcome, Difficulty, Grade, Submission Days, Submission Date.")
+    uploaded = st.file_uploader("Choose Excel file", type=["xlsx", "xls"], key="practical_import_file")
+    if uploaded is not None:
+        try:
+            rows = pd.read_excel(uploaded)
+            preview = validate_practical_import(rows, db, user_id)
+            valid_count = sum(1 for item in preview if item["ready"])
+            bad_count = len(preview) - valid_count
+            st.success(f"Validated {len(preview)} row(s): {valid_count} ready, {bad_count} with errors.")
+            st.dataframe(pd.DataFrame(preview), hide_index=True, use_container_width=True)
+            if valid_count and st.button("Import validated practicals"):
+                summary = import_practicals_from_dataframe(rows, db, user_id, user_id)
+                st.success(f"Imported {summary['imported']} practical(s); skipped {summary['skipped']}; failed {summary['failed']}")
+                st.rerun()
+        except Exception as error:
+            st.error(f"Import failed: {error}")
+
+
 def _practical_management(db, user_id: int, subject_labels: dict[int, str]) -> None:
     subjects = list(db.scalars(select(Subject).where(Subject.id.in_(subject_labels.keys())).order_by(Subject.code)))
     if not subjects:
         st.info("Create subjects first via the administrator.")
         return
+
+    with st.expander("Bulk import practicals", expanded=False):
+        _bulk_practical_import(db, user_id)
 
     with st.form("create_practical", clear_on_submit=True):
         st.caption("Create a new practical for one of your subjects")
@@ -65,7 +105,7 @@ def _practical_management(db, user_id: int, subject_labels: dict[int, str]) -> N
         difficulty = st.selectbox("Difficulty", ["Easy", "Medium", "Hard"], index=1)
         grade = st.selectbox("Grade", VALID_GRADES, index=0)
         submission_date = st.date_input("Submission date", value=date.today() + timedelta(days=7), min_value=date.today())
-        if st.form_submit_button("Create practical", type="primary"):
+        if st.form_submit_button("Create practical"):
             if not title.strip():
                 st.error("Enter a practical title.")
             else:
