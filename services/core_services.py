@@ -210,6 +210,19 @@ def validate_bulk_user_import(rows: pd.DataFrame, user_type: str, db: Session) -
     seen_email: set[str] = set()
     seen_employee: set[str] = set()
 
+    # Build a lookup of valid programme codes and names for student import validation
+    if user_type == "student":
+        all_programs = list(db.scalars(select(Program)))
+        valid_programme_codes = {p.code.lower() for p in all_programs}
+        valid_programme_names = {p.name.lower() for p in all_programs}
+        programme_by_identifier = {p.code.lower(): p for p in all_programs}
+        programme_by_identifier.update({p.name.lower(): p for p in all_programs})
+    else:
+        all_programs = []
+        valid_programme_codes = set()
+        valid_programme_names = set()
+        programme_by_identifier = {}
+
     for index, row in rows.fillna("").iterrows():
         record: dict[str, object] = {
             "row": index + 2,
@@ -252,6 +265,24 @@ def validate_bulk_user_import(rows: pd.DataFrame, user_type: str, db: Session) -
 
             if not programme:
                 errors.append("Missing Programme")
+            elif programme.lower() not in valid_programme_codes and programme.lower() not in valid_programme_names:
+                errors.append(
+                    f"Programme '{programme}' does not exist. "
+                    f"Please ask the administrator to add it under Master Data → Programmes first."
+                )
+            else:
+                # validate semester against programme's total_semesters
+                matched_prog = programme_by_identifier.get(programme.lower())
+                if matched_prog and semester_raw:
+                    try:
+                        sem_int = int(float(str(semester_raw).strip()))
+                        if sem_int > matched_prog.total_semesters:
+                            errors.append(
+                                f"Semester {sem_int} exceeds the total semesters ({matched_prog.total_semesters}) "
+                                f"configured for '{matched_prog.code}'."
+                            )
+                    except (ValueError, TypeError):
+                        pass  # caught below
 
             if not semester_raw:
                 errors.append("Missing Semester")

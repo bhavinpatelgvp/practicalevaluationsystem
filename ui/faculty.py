@@ -170,74 +170,69 @@ def _practical_management(db, user_id: int, subject_labels: dict[int, str]) -> N
 
 def _assignment_ui(db, user_id: int, subject_labels: dict[int, str]) -> None:
     st.subheader("Assign practical to students")
-    st.caption("Filter students by Programme, Semester, and Subject to assign practicals.")
+    st.caption("Select one of your assigned subjects, choose a practical, and assign it to students.")
 
     # 1. Fetch faculty's assigned subjects
     fac_subjects = subjects_for_faculty(db, user_id)
     if not fac_subjects:
-        st.info("No subjects have been assigned to you yet.")
+        st.info("No subjects have been assigned to you yet. Contact the administrator.")
         return
 
-    # Find distinct programmes linked to these subjects (or all programmes if subjects lack program_id)
-    linked_prog_ids = {s.program_id for s in fac_subjects if s.program_id is not None}
-    if linked_prog_ids:
-        programs = list(db.scalars(select(Program).where(Program.id.in_(linked_prog_ids)).order_by(Program.code)))
-    else:
-        programs = list(db.scalars(select(Program).order_by(Program.code)))
-
-    if not programs:
-        st.info("No programmes have been configured yet.")
-        return
-
-    prog_choices = {p.id: f"{p.code} · {p.name}" for p in programs}
+    subj_choices = {
+        s.id: f"{s.code} · {s.name} ({s.program.code if s.program else 'No Prog'} · Sem {s.semester})"
+        for s in fac_subjects
+    }
 
     col1, col2 = st.columns(2)
     with col1:
-        selected_prog_id = st.selectbox("1. Select Programme", list(prog_choices), format_func=prog_choices.get, key="assign_prog_select")
-        chosen_program = db.get(Program, selected_prog_id)
-    
-    with col2:
-        max_sem = chosen_program.total_semesters if chosen_program else 8
-        semesters_available = list(range(1, max_sem + 1))
-        selected_semester = st.selectbox("2. Select Semester", semesters_available, index=0, format_func=lambda s: f"Semester {s}", key="assign_sem_select")
-
-    # Filter faculty subjects for the selected program and semester
-    matching_subjects = [
-        s for s in fac_subjects
-        if (s.program_id == selected_prog_id or s.program_id is None) and (s.semester == selected_semester or s.semester is None)
-    ]
-    # Fallback to all faculty subjects if none strictly matched
-    if not matching_subjects:
-        matching_subjects = [s for s in fac_subjects if s.program_id == selected_prog_id or s.program_id is None]
-    if not matching_subjects:
-        matching_subjects = fac_subjects
-
-    subj_choices = {s.id: f"{s.code} · {s.name} (Sem {s.semester})" for s in matching_subjects}
-    
-    col3, col4 = st.columns(2)
-    with col3:
-        selected_subj_id = st.selectbox("3. Select Subject", list(subj_choices), format_func=subj_choices.get, key="assign_subj_select")
+        selected_subj_id = st.selectbox(
+            "1. Select Subject",
+            list(subj_choices),
+            format_func=subj_choices.get,
+            key="assign_subj_select",
+        )
         chosen_subject = db.get(Subject, selected_subj_id)
 
-    # 4. Fetch practicals for selected subject
-    practicals = list(db.scalars(select(Practical).where(Practical.subject_id == selected_subj_id).order_by(Practical.practical_number)))
+    # 2. Fetch practicals for selected subject
+    practicals = list(
+        db.scalars(
+            select(Practical)
+            .where(Practical.subject_id == selected_subj_id)
+            .order_by(Practical.practical_number)
+        )
+    )
     if not practicals:
-        with col4:
+        with col2:
             st.warning("No practicals created for this subject.")
         st.info(f"Create a practical for {chosen_subject.code} in the 'Create / manage practicals' tab first.")
         return
 
-    pract_choices = {p.id: f"P{p.practical_number} · {p.title} (Due: {p.submission_date.strftime('%d %b %Y') if p.submission_date else 'No date'})" for p in practicals}
-    with col4:
-        selected_pract_id = st.selectbox("4. Select Practical", list(pract_choices), format_func=pract_choices.get, key="assign_pract_select")
+    pract_choices = {
+        p.id: f"P{p.practical_number} · {p.title} (Due: {p.submission_date.strftime('%d %b %Y') if p.submission_date else 'No date'})"
+        for p in practicals
+    }
+    with col2:
+        selected_pract_id = st.selectbox(
+            "2. Select Practical",
+            list(pract_choices),
+            format_func=pract_choices.get,
+            key="assign_pract_select",
+        )
         selected_practical = db.get(Practical, selected_pract_id)
+
+    # Auto-detected Programme & Semester with override expander
+    prog_code = chosen_subject.program.code if chosen_subject.program else "MCA"
+    prog_id = chosen_subject.program_id
+    sem_val = chosen_subject.semester or 1
+
+    st.caption(f"Target Cohort: **{prog_code}** · **Semester {sem_val}** (derived from subject configuration)")
 
     st.markdown("---")
 
     # Fetch students enrolled in this program and semester
     student_query = select(Student).where(
-        (Student.program_id == selected_prog_id) | ((Student.program_id.is_(None)) & (Student.program == chosen_program.code)),
-        Student.semester == selected_semester,
+        (Student.program_id == prog_id) | ((Student.program_id.is_(None)) & (Student.program == prog_code)),
+        Student.semester == sem_val,
     ).order_by(Student.enrollment_no)
     students = list(db.scalars(student_query))
 

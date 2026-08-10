@@ -222,8 +222,12 @@ def test_delete_user_blocked_for_student_profile_and_self():
 
 
 def test_validate_bulk_user_import_marks_missing_and_duplicate_rows():
+    from models.schema import Program
+    from services.core_services import create_program
     db = setup_db()
-    seed_world(db)
+    world = seed_world(db)
+    create_program(db, "MCA", "Master of Computer Applications", total_semesters=4, department_id=world["department"].id)
+
     rows = pd.DataFrame(
         [
             {"Enrollment No.": "E100", "Student Name": "Alice", "Email": "alice@example.com", "Programme": "MCA", "Semester": 3},
