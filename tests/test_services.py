@@ -226,9 +226,9 @@ def test_validate_bulk_user_import_marks_missing_and_duplicate_rows():
     seed_world(db)
     rows = pd.DataFrame(
         [
-            {"Enrollment No": "E100", "Name": "Alice", "Email": "alice@example.com", "Mobile": "9876543210", "Course": "MCA", "Semester": "3", "Division": "A", "Batch": "B1"},
-            {"Enrollment No": "", "Name": "Bob", "Email": "bob@example.com", "Mobile": "9876543210", "Course": "MCA", "Semester": "3", "Division": "A", "Batch": "B1"},
-            {"Enrollment No": "E100", "Name": "Alice 2", "Email": "alice2@example.com", "Mobile": "9876543210", "Course": "MCA", "Semester": "3", "Division": "A", "Batch": "B1"},
+            {"Enrollment No.": "E100", "Student Name": "Alice", "Email": "alice@example.com", "Programme": "MCA", "Semester": 3},
+            {"Enrollment No.": "", "Student Name": "Bob", "Email": "bob@example.com", "Programme": "MCA", "Semester": 3},
+            {"Enrollment No.": "E100", "Student Name": "Alice 2", "Email": "alice2@example.com", "Programme": "MCA", "Semester": 3},
         ]
     )
 
@@ -251,9 +251,9 @@ def test_validate_practical_import_scopes_to_assigned_subjects():
     assign_faculty_subjects(db, world["faculty"].id, [world["subject"].id], world["admin"].id)
     rows = pd.DataFrame(
         [
-            {"Subject Code": "CS1", "Practical Title": "Lab 1", "Description": "d", "Learning Outcome": "o", "Difficulty": "Medium", "Grade": "B", "Submission Days": 7, "Submission Date": ""},
-            {"Subject Code": "CS2", "Practical Title": "Other", "Description": "d", "Learning Outcome": "o", "Difficulty": "Medium", "Grade": "A", "Submission Days": 5, "Submission Date": ""},
-            {"Subject Code": "CS1", "Practical Title": "", "Description": "d", "Learning Outcome": "o", "Difficulty": "Medium", "Grade": "B", "Submission Days": 7, "Submission Date": ""},
+            {"Subject Code": "CS1", "Practical Title": "Lab 1", "Description": "d", "Learning Outcome": "o", "Difficulty": "Medium", "Submission Date": ""},
+            {"Subject Code": "CS2", "Practical Title": "Other", "Description": "d", "Learning Outcome": "o", "Difficulty": "Medium", "Submission Date": ""},
+            {"Subject Code": "CS1", "Practical Title": "", "Description": "d", "Learning Outcome": "o", "Difficulty": "Medium", "Submission Date": ""},
         ]
     )
     preview = validate_practical_import(rows, db, world["faculty"].id)
@@ -269,9 +269,9 @@ def test_import_practicals_from_dataframe():
     assign_faculty_subjects(db, world["faculty"].id, [world["subject"].id], world["admin"].id)
     rows = pd.DataFrame(
         [
-            {"Subject Code": "CS1", "Practical Title": "Lab 1", "Description": "d", "Learning Outcome": "o", "Difficulty": "Medium", "Grade": "B", "Submission Days": 7, "Submission Date": ""},
-            {"Subject Code": "CS1", "Practical Title": "Lab 2", "Description": "d", "Learning Outcome": "o", "Difficulty": "Hard", "Grade": "A", "Submission Days": 10, "Submission Date": ""},
-            {"Subject Code": "CS2", "Practical Title": "Other", "Description": "d", "Learning Outcome": "o", "Difficulty": "Easy", "Grade": "C", "Submission Days": 5, "Submission Date": ""},
+            {"Subject Code": "CS1", "Practical Title": "Lab 1", "Description": "d", "Learning Outcome": "o", "Difficulty": "Medium", "Submission Date": ""},
+            {"Subject Code": "CS1", "Practical Title": "Lab 2", "Description": "d", "Learning Outcome": "o", "Difficulty": "Hard", "Submission Date": ""},
+            {"Subject Code": "CS2", "Practical Title": "Other", "Description": "d", "Learning Outcome": "o", "Difficulty": "Easy", "Submission Date": ""},
         ]
     )
     summary = import_practicals_from_dataframe(rows, db, world["faculty"].id, world["faculty"].id)
@@ -323,3 +323,30 @@ def test_program_department_subject_student_linkages():
     assignments = db.scalars(select(Assignment).where(Assignment.practical_id == practical.id)).all()
     assert len(assignments) == 1
     assert assignments[0].student_id == world["student"].id
+
+
+def test_student_bulk_import_simplified_format():
+    from models.schema import Program, Student, User
+    from services.core_services import create_program, import_bulk_users_from_dataframe
+
+    db = setup_db()
+    world = seed_world(db)
+    prog = create_program(db, "MCA", "Master of Computer Applications", department_id=world["department"].id)
+
+    rows = pd.DataFrame(
+        [
+            {"Enrollment No.": "GVCS24101", "Student Name": "Rohan Sharma", "Email": "rohan@example.com", "Programme": "MCA", "Semester": 3},
+            {"Enrollment No.": "GVCS24102", "Student Name": "Pooja Patel", "Email": "pooja@example.com", "Programme": "MCA", "Semester": 3},
+        ]
+    )
+
+    summary = import_bulk_users_from_dataframe(rows, "student", db, actor_id=world["admin"].id)
+    assert summary["imported"] == 2
+    assert summary["failed"] == 0
+
+    student1 = db.scalar(select(Student).where(Student.enrollment_no == "GVCS24101"))
+    assert student1 is not None
+    assert student1.user.full_name == "Rohan Sharma"
+    assert student1.program_id == prog.id
+    assert student1.program == "MCA"
+    assert student1.semester == 3

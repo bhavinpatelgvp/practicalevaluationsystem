@@ -69,7 +69,7 @@ def _bulk_practical_import(db, user_id: int) -> None:
             file_name="practical_import_template.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        st.info("Required columns: Subject Code, Practical Title. Optional: Description, Learning Outcome, Difficulty, Grade, Submission Days, Submission Date.")
+        st.info("Required columns: **Subject Code**, **Practical Title**. Optional: Description, Learning Outcome, Difficulty (Easy/Medium/Hard), Submission Date (YYYY-MM-DD). Grade and Submission Days are no longer needed.")
     uploaded = st.file_uploader("Choose Excel file", type=["xlsx", "xls"], key="practical_import_file")
     if uploaded is not None:
         try:
