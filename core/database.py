@@ -71,6 +71,16 @@ def init_db() -> None:
             if "program_id" not in student_columns:
                 connection.execute(text("ALTER TABLE students ADD COLUMN program_id INTEGER REFERENCES programs(id)"))
 
+        if inspect(engine).has_table("programs"):
+            program_columns = {column["name"] for column in inspect(engine).get_columns("programs")}
+            if "department_id" not in program_columns:
+                connection.execute(text("ALTER TABLE programs ADD COLUMN department_id INTEGER REFERENCES departments(id)"))
+
+        if inspect(engine).has_table("subjects"):
+            subject_columns = {column["name"] for column in inspect(engine).get_columns("subjects")}
+            if "program_id" not in subject_columns:
+                connection.execute(text("ALTER TABLE subjects ADD COLUMN program_id INTEGER REFERENCES programs(id)"))
+
 
 def get_db() -> Generator:
     session = SessionLocal()

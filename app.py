@@ -30,7 +30,7 @@ def render_footer() -> None:
         """
         <div class="page-footer">
             🎓&nbsp; <strong>Gujarat Vidyapith</strong>
-            &nbsp;·&nbsp; Designed for Department of Computer Science
+            &nbsp;·&nbsp; Developed by Department of Computer Science
             &nbsp;&nbsp;|&nbsp;&nbsp;
             &copy; 2026 Gujarat Vidyapith &nbsp;·&nbsp; Practical Evaluation &amp; Management System
         </div>
@@ -102,7 +102,7 @@ with SessionLocal() as db:
             st.rerun()
       # brand header removed
         with st.sidebar:
-          st.markdown("**Transparent Practical Evaluation**")
+          st.markdown("**Practical Evaluation System**")
           st.caption(f"{user.full_name} · {user.role.name}")
           if user.role.name == "Administrator":
             workspace_options = ["Dashboard", "Administration"]
