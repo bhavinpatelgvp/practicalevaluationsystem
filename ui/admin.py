@@ -10,6 +10,7 @@ from services.core_services import (
     audit,
     build_bulk_import_template,
     build_subject_import_template,
+    bulk_assign_subjects_to_program,
     create_program,
     delete_department,
     delete_program,
@@ -35,6 +36,10 @@ def _role_id(db, name: str) -> int | None:
 
 def _department_labels(db) -> dict[int, str]:
     return {item.id: f"{item.code} · {item.name}" for item in db.scalars(select(Department).order_by(Department.code))}
+
+
+def _program_labels(db) -> dict[int, str]:
+    return {item.id: f"{item.code} · {item.name}" for item in db.scalars(select(Program).order_by(Program.code))}
 
 
 def _subject_labels(db) -> dict[int, str]:
@@ -69,7 +74,7 @@ def _department_crud(db, user_id: int) -> None:
     departments = list(db.scalars(select(Department).order_by(Department.code)))
     if departments:
         st.dataframe(
-            pd.DataFrame([{"Code": item.code, "Name": item.name, "Subjects": len(item.subjects)} for item in departments]),
+            pd.DataFrame([{"Code": item.code, "Name": item.name, "Programmes": len(item.programs), "Subjects": len(item.subjects)} for item in departments]),
             hide_index=True, use_container_width=True,
         )
     with st.form("add_department", clear_on_submit=True):
@@ -107,7 +112,7 @@ def _department_crud(db, user_id: int) -> None:
                         db.rollback(); st.error("That department code or name already exists.")
         with delete_column:
             st.caption("Delete department")
-            st.caption("A department with subjects cannot be deleted.")
+            st.caption("A department with subjects or programmes cannot be deleted.")
             if st.button("Delete selected department", type="secondary"):
                 try:
                     delete_department(db, selected, user_id)
@@ -120,50 +125,88 @@ def _department_crud(db, user_id: int) -> None:
 def _program_crud(db, user_id: int) -> None:
     st.subheader("Programme (course) master data")
     programs = list(db.scalars(select(Program).order_by(Program.code)))
+    departments = _department_labels(db)
     if programs:
         st.dataframe(
             pd.DataFrame(
-                [{"Code": item.code, "Name": item.name, "Duration (months)": item.duration_months, "Semesters": item.total_semesters, "Enrolled students": len(item.students)} for item in programs]
+                [
+                    {
+                        "Code": item.code,
+                        "Name": item.name,
+                        "Department": item.department.code if item.department else "—",
+                        "Duration (months)": item.duration_months,
+                        "Semesters": item.total_semesters,
+                        "Subjects": len(item.subjects),
+                        "Enrolled students": len(item.students),
+                    }
+                    for item in programs
+                ]
             ),
-            hide_index=True, use_container_width=True,
+            hide_index=True,
+            use_container_width=True,
         )
+    if not departments:
+        st.info("Create a department before adding programmes.")
+        return
     with st.form("add_program", clear_on_submit=True):
         st.caption("Add programme")
         code = st.text_input("Programme code (e.g. MCA)")
         name = st.text_input("Programme name")
+        department_id = st.selectbox("Department", list(departments), format_func=departments.get, key="add_program_department")
         duration_months = st.number_input("Duration (months)", min_value=1, max_value=72, value=24)
         total_semesters = st.number_input("Total semesters", min_value=1, max_value=12, value=4)
         if st.form_submit_button("Add programme"):
             try:
-                p = create_program(db, code, name, int(duration_months), int(total_semesters), actor_id=user_id)
+                p = create_program(
+                    db,
+                    code,
+                    name,
+                    int(duration_months),
+                    int(total_semesters),
+                    department_id=department_id,
+                    actor_id=user_id,
+                )
                 _commit_with_audit(db, user_id, "CREATE_PROGRAM", "Program", p.id, p.code)
                 st.success("Programme added.")
                 _trigger_refresh()
             except ValueError as error:
                 st.error(str(error))
             except IntegrityError:
-                db.rollback(); st.error("That programme code or name already exists.")
+                db.rollback()
+                st.error("That programme code or name already exists.")
     if programs:
         update_column, delete_column = st.columns(2)
         with update_column:
-            labels = {item.id: item.code for item in programs}
+            labels = {item.id: f"{item.code} · {item.name}" for item in programs}
             selected = st.selectbox("Update programme", list(labels), format_func=labels.get, key="update_program_select")
             program = db.get(Program, selected)
             with st.form("update_program", clear_on_submit=True):
                 edited_code = st.text_input("Code", value=program.code)
                 edited_name = st.text_input("Name", value=program.name)
+                default_dept_idx = list(departments).index(program.department_id) if program.department_id in departments else 0
+                edited_department = st.selectbox("Department", list(departments), format_func=departments.get, index=default_dept_idx, key="update_program_dept")
                 edited_duration = st.number_input("Duration (months)", min_value=1, max_value=72, value=program.duration_months)
                 edited_semesters = st.number_input("Total semesters", min_value=1, max_value=12, value=program.total_semesters)
                 if st.form_submit_button("Save changes"):
                     try:
-                        p = update_program(db, program.id, user_id, code=edited_code, name=edited_name, duration_months=int(edited_duration), total_semesters=int(edited_semesters))
+                        p = update_program(
+                            db,
+                            program.id,
+                            user_id,
+                            code=edited_code,
+                            name=edited_name,
+                            duration_months=int(edited_duration),
+                            total_semesters=int(edited_semesters),
+                            department_id=edited_department,
+                        )
                         _commit_with_audit(db, user_id, "UPDATE_PROGRAM", "Program", p.id, p.code)
                         st.success("Programme updated.")
                         _trigger_refresh()
                     except ValueError as error:
                         st.error(str(error))
                     except IntegrityError:
-                        db.rollback(); st.error("That programme code or name already exists.")
+                        db.rollback()
+                        st.error("That programme code or name already exists.")
         with delete_column:
             st.caption("Delete programme")
             st.caption("A programme with enrolled students cannot be deleted.")
@@ -180,6 +223,8 @@ def _subject_crud(db, user_id: int) -> None:
     st.subheader("Subject master data")
     subjects = list(db.scalars(select(Subject).order_by(Subject.code)))
     departments = _department_labels(db)
+    programs = _program_labels(db)
+
     with st.expander("Bulk Subject Import", expanded=False):
         st.caption("Upload semester-wise subject data from Excel with validation and preview.")
         uploaded = st.file_uploader("Choose Excel file", type=["xlsx", "xls"], key="subject_import_file")
@@ -200,33 +245,89 @@ def _subject_crud(db, user_id: int) -> None:
             st.download_button("Download sample template", build_subject_import_template(), file_name="subject_template.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         with cols[1]:
             st.info("The template uses the expected columns for code, name, semester, course, department, credits, subject type, and status.")
+
+    if programs and subjects:
+        with st.expander("Bulk Assign Subjects to Programme & Semester", expanded=False):
+            st.caption("Link multiple existing subjects to a specific Programme and Semester in one click.")
+            b_col1, b_col2 = st.columns(2)
+            with b_col1:
+                b_prog_id = st.selectbox("Target Programme", list(programs), format_func=programs.get, key="bulk_subj_prog")
+                b_prog = db.get(Program, b_prog_id)
+            with b_col2:
+                b_max_sem = b_prog.total_semesters if b_prog else 10
+                b_sem = st.number_input("Semester", min_value=1, max_value=b_max_sem, value=1, key="bulk_subj_sem")
+            
+            all_subjs_labels = {
+                s.id: f"{s.code} · {s.name} [Current: {s.program.code if s.program else 'No Prog'} - Sem {s.semester}]"
+                for s in subjects
+            }
+            selected_subjs = st.multiselect("Select subjects to link", list(all_subjs_labels), format_func=all_subjs_labels.get, key="bulk_subj_select")
+            if st.button("Assign Selected Subjects to Programme"):
+                if not selected_subjs:
+                    st.error("Please select at least one subject.")
+                else:
+                    count = bulk_assign_subjects_to_program(db, selected_subjs, b_prog_id, int(b_sem), user_id)
+                    st.success(f"Successfully linked {count} subject(s) to {b_prog.code} (Sem {b_sem}).")
+                    _trigger_refresh()
+
     if subjects:
         st.dataframe(
             pd.DataFrame(
-                [{"Code": item.code, "Name": item.name, "Semester": item.semester, "Department": item.department.code} for item in subjects]
+                [
+                    {
+                        "Code": item.code,
+                        "Name": item.name,
+                        "Programme": item.program.code if item.program else "—",
+                        "Semester": item.semester,
+                        "Department": item.department.code if item.department else "—",
+                    }
+                    for item in subjects
+                ]
             ),
-            hide_index=True, use_container_width=True,
+            hide_index=True,
+            use_container_width=True,
         )
     if not departments:
         st.info("Create a department before adding subjects.")
         return
+    if not programs:
+        st.info("Create a programme before adding subjects.")
+        return
+
+    st.caption("Add subject")
+    add_prog_id = st.selectbox("Programme", list(programs), format_func=programs.get, key="add_subject_program")
+    chosen_program = db.get(Program, add_prog_id)
+    max_semester = chosen_program.total_semesters if chosen_program else 10
+
     with st.form("add_subject", clear_on_submit=True):
-        st.caption("Add subject")
         code = st.text_input("Subject code")
         name = st.text_input("Subject name")
-        semester = st.number_input("Semester", min_value=1, max_value=12, value=1)
-        department_id = st.selectbox("Department", list(departments), format_func=departments.get, key="add_subject_department")
+        semester = st.number_input("Semester", min_value=1, max_value=max_semester, value=1)
+        default_dept_idx = 0
+        if chosen_program and chosen_program.department_id and chosen_program.department_id in departments:
+            default_dept_idx = list(departments).index(chosen_program.department_id)
+        department_id = st.selectbox("Department", list(departments), index=default_dept_idx, format_func=departments.get, key="add_subject_department")
         if st.form_submit_button("Add subject"):
             if not code.strip() or not name.strip():
                 st.error("Enter a subject code and name.")
             else:
-                db.add(Subject(code=code.strip().upper(), name=name.strip(), semester=int(semester), department_id=department_id))
+                db.add(
+                    Subject(
+                        code=code.strip().upper(),
+                        name=name.strip(),
+                        semester=int(semester),
+                        department_id=department_id,
+                        program_id=add_prog_id,
+                    )
+                )
                 try:
                     _commit_with_audit(db, user_id, "CREATE_SUBJECT", "Subject")
-                    st.success("Subject added.")
+                    st.success(f"Subject {code.strip().upper()} added to {chosen_program.code} (Sem {semester}).")
                     _trigger_refresh()
                 except IntegrityError:
-                    db.rollback(); st.error("That subject code already exists.")
+                    db.rollback()
+                    st.error("That subject code already exists.")
+
     if subjects:
         update_column, delete_column = st.columns(2)
         with update_column:
@@ -236,20 +337,28 @@ def _subject_crud(db, user_id: int) -> None:
             with st.form("update_subject", clear_on_submit=True):
                 edited_code = st.text_input("Code", value=subject.code)
                 edited_name = st.text_input("Name", value=subject.name)
-                edited_semester = st.number_input("Semester", min_value=1, max_value=12, value=subject.semester)
-                default_index = list(departments).index(subject.department_id) if subject.department_id in departments else 0
-                edited_department = st.selectbox("Department", list(departments), format_func=departments.get, index=default_index, key="update_subject_department")
+                
+                default_prog_idx = list(programs).index(subject.program_id) if subject.program_id in programs else 0
+                edited_program_id = st.selectbox("Programme", list(programs), index=default_prog_idx, format_func=programs.get, key="update_subject_prog")
+                upd_prog = db.get(Program, edited_program_id)
+                upd_max_sem = upd_prog.total_semesters if upd_prog else 10
+                
+                edited_semester = st.number_input("Semester", min_value=1, max_value=upd_max_sem, value=min(subject.semester, upd_max_sem))
+                default_dept_idx = list(departments).index(subject.department_id) if subject.department_id in departments else 0
+                edited_department = st.selectbox("Department", list(departments), format_func=departments.get, index=default_dept_idx, key="update_subject_department")
                 if st.form_submit_button("Save changes"):
                     subject.code = edited_code.strip().upper() or subject.code
                     subject.name = edited_name.strip() or subject.name
                     subject.semester = int(edited_semester)
+                    subject.program_id = edited_program_id
                     subject.department_id = edited_department
                     try:
                         _commit_with_audit(db, user_id, "UPDATE_SUBJECT", "Subject", subject.id)
                         st.success("Subject updated.")
                         _trigger_refresh()
                     except IntegrityError:
-                        db.rollback(); st.error("That subject code already exists.")
+                        db.rollback()
+                        st.error("That subject code already exists.")
         with delete_column:
             st.caption("Delete subject")
             st.caption("A subject assigned to faculty or with practicals cannot be deleted.")
@@ -371,7 +480,18 @@ def _user_crud(db, user_id: int) -> None:
     st.caption("Create user account")
     selected_role_id = st.selectbox("Role", list(roles), format_func=roles.get, key="create_user_role_select")
     is_student = roles.get(selected_role_id) == "Student"
+    programs = _program_labels(db)
     
+    if is_student and not programs:
+        st.warning("Please create a Programme in Master Data before creating student accounts.")
+
+    selected_prog_id = None
+    if is_student and programs:
+        selected_prog_id = st.selectbox("Programme", list(programs), format_func=programs.get, key="cu_program_select")
+    
+    sel_prog = db.get(Program, selected_prog_id) if selected_prog_id else None
+    max_semester = sel_prog.total_semesters if sel_prog else 10
+
     with st.form("create_user", clear_on_submit=False):
         username = st.text_input("Username / Enrollment No" if is_student else "Username", key="cu_username")
         full_name = st.text_input("Full name", key="cu_full_name")
@@ -380,15 +500,14 @@ def _user_crud(db, user_id: int) -> None:
         
         if is_student:
             st.markdown("---")
-            st.caption("Student profile details")
-            program = st.text_input("Programme (e.g. MCA)", value="MCA", key="cu_program")
-            semester = st.number_input("Semester", min_value=1, max_value=10, value=1, key="cu_semester")
+            st.caption(f"Student profile details ({sel_prog.code if sel_prog else 'No Programme'})")
+            semester = st.number_input("Semester", min_value=1, max_value=max_semester, value=1, key="cu_semester")
             
         if st.form_submit_button("Create user"):
             if not all([username.strip(), full_name.strip(), email.strip(), password]):
                 st.error("Complete all fields.")
-            elif is_student and not program.strip():
-                st.error("Complete the programme field for the student profile.")
+            elif is_student and not selected_prog_id:
+                st.error("Select a Programme for the student profile.")
             else:
                 user = User(username=username.strip(), full_name=full_name.strip(), email=email.strip(), password_hash=hash_password(password), role_id=selected_role_id)
                 db.add(user)
@@ -396,10 +515,10 @@ def _user_crud(db, user_id: int) -> None:
                     db.flush()
                     if is_student:
                         from models.schema import Student
-                        db.add(Student(user_id=user.id, enrollment_no=username.strip(), semester=int(semester), program=program.strip()))
+                        db.add(Student(user_id=user.id, enrollment_no=username.strip(), semester=int(semester), program=sel_prog.code if sel_prog else "MCA", program_id=selected_prog_id))
                     _commit_with_audit(db, user_id, "CREATE_USER", "User", user.id)
                     st.success("User account created.")
-                    for key in ["cu_username", "cu_full_name", "cu_email", "cu_password", "cu_program", "cu_semester"]:
+                    for key in ["cu_username", "cu_full_name", "cu_email", "cu_password", "cu_semester"]:
                         if key in st.session_state:
                             del st.session_state[key]
                     _trigger_refresh()
@@ -421,17 +540,29 @@ def _user_crud(db, user_id: int) -> None:
                 new_password = st.text_input("Reset password (leave blank to keep)", type="password", key=f"uu_pass_{target.id}")
                 
                 is_student_update = target.student is not None
+                edited_prog_id = None
+                upd_prog = None
                 if is_student_update:
                     st.markdown("---")
                     st.caption("Student profile details")
                     edited_enrollment = st.text_input("Enrollment No", value=target.student.enrollment_no, key=f"uu_enroll_{target.id}")
-                    edited_program = st.text_input("Programme", value=target.student.program, key=f"uu_prog_{target.id}")
-                    edited_semester = st.number_input("Semester", min_value=1, max_value=10, value=target.student.semester, key=f"uu_sem_{target.id}")
+                    
+                    default_prog_idx = 0
+                    if target.student.program_id in programs:
+                        default_prog_idx = list(programs).index(target.student.program_id)
+                    elif programs and target.student.program:
+                        for idx, pid in enumerate(programs):
+                            if target.student.program in programs[pid]:
+                                default_prog_idx = idx
+                                break
+                    
+                    edited_prog_id = st.selectbox("Programme", list(programs), index=default_prog_idx, format_func=programs.get, key=f"uu_prog_{target.id}") if programs else None
+                    upd_prog = db.get(Program, edited_prog_id) if edited_prog_id else None
+                    upd_max_sem = upd_prog.total_semesters if upd_prog else 10
+                    edited_semester = st.number_input("Semester", min_value=1, max_value=upd_max_sem, value=min(target.student.semester, upd_max_sem), key=f"uu_sem_{target.id}")
 
                 if st.form_submit_button("Save changes"):
-                    if is_student_update and not edited_program.strip():
-                        st.error("Programme cannot be empty for a student.")
-                    elif is_student_update and not edited_enrollment.strip():
+                    if is_student_update and not edited_enrollment.strip():
                         st.error("Enrollment number cannot be empty.")
                     else:
                         target.full_name = edited_name.strip() or target.full_name
@@ -440,7 +571,9 @@ def _user_crud(db, user_id: int) -> None:
                         target.role_id = edited_role
                         if is_student_update:
                             target.student.enrollment_no = edited_enrollment.strip()
-                            target.student.program = edited_program.strip()
+                            if edited_prog_id:
+                                target.student.program_id = edited_prog_id
+                                target.student.program = upd_prog.code if upd_prog else target.student.program
                             target.student.semester = int(edited_semester)
                         if new_password:
                             target.password_hash = hash_password(new_password)

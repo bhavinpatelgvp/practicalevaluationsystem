@@ -282,3 +282,44 @@ def test_import_practicals_from_dataframe():
     assert titles == {"Lab 1", "Lab 2"}
     numbers = {p.practical_number for p in practicals}
     assert numbers == {1, 2}
+
+
+def test_program_department_subject_student_linkages():
+    from models.schema import Program
+    from services.core_services import create_program, update_program, bulk_assign_subjects_to_program
+
+    db = setup_db()
+    world = seed_world(db)
+
+    # 1. Create Program linked to Department
+    prog = create_program(db, "MCA", "Master of Computer Applications", duration_months=24, total_semesters=4, department_id=world["department"].id)
+    assert prog.department_id == world["department"].id
+    assert prog.department.code == "CS"
+
+    # 2. Update Program
+    prog_updated = update_program(db, prog.id, world["admin"].id, name="MCA 2-Year", total_semesters=4)
+    assert prog_updated.name == "MCA 2-Year"
+
+    # 3. Bulk assign existing subjects to Program and Semester
+    count = bulk_assign_subjects_to_program(db, [world["subject"].id, world["other_subject"].id], prog.id, semester=3)
+    assert count == 2
+    assert world["subject"].program_id == prog.id
+    assert world["subject"].semester == 3
+    assert world["other_subject"].program_id == prog.id
+
+    # 4. Link student to program
+    world["student"].program_id = prog.id
+    world["student"].semester = 3
+    db.commit()
+    assert world["student"].program_ref.code == "MCA"
+
+    # 5. Assign practical to specific student
+    practical = Practical(subject=world["subject"], practical_number=1, title="Lab P1", created_by=world["faculty"].id, submission_days=7)
+    db.add(practical); db.commit()
+
+    # Assign only to world["student"]
+    assigned_count = assign_practical(db, practical, world["faculty"].id, student_ids=[world["student"].id])
+    assert assigned_count == 1
+    assignments = db.scalars(select(Assignment).where(Assignment.practical_id == practical.id)).all()
+    assert len(assignments) == 1
+    assert assignments[0].student_id == world["student"].id

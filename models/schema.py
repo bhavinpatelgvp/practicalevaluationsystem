@@ -23,6 +23,7 @@ class Department(Base):
     name: Mapped[str] = mapped_column(String(120), unique=True)
     code: Mapped[str] = mapped_column(String(20), unique=True)
     subjects: Mapped[list["Subject"]] = relationship(back_populates="department")
+    programs: Mapped[list["Program"]] = relationship(back_populates="department")
 
 
 class User(Base):
@@ -64,7 +65,10 @@ class Program(Base):
     name: Mapped[str] = mapped_column(String(150), unique=True)
     duration_months: Mapped[int] = mapped_column(Integer, default=24)
     total_semesters: Mapped[int] = mapped_column(Integer, default=4)
+    department_id: Mapped[int | None] = mapped_column(ForeignKey("departments.id"), nullable=True)
+    department: Mapped[Department | None] = relationship(back_populates="programs")
     students: Mapped[list["Student"]] = relationship(back_populates="program_ref")
+    subjects: Mapped[list["Subject"]] = relationship(back_populates="program")
 
 
 class Subject(Base):
@@ -74,7 +78,9 @@ class Subject(Base):
     name: Mapped[str] = mapped_column(String(150))
     semester: Mapped[int] = mapped_column(Integer)
     department_id: Mapped[int] = mapped_column(ForeignKey("departments.id"))
+    program_id: Mapped[int | None] = mapped_column(ForeignKey("programs.id"), nullable=True)
     department: Mapped[Department] = relationship(back_populates="subjects")
+    program: Mapped[Program | None] = relationship(back_populates="subjects")
     practicals: Mapped[list["Practical"]] = relationship(back_populates="subject")
     faculty_subjects: Mapped[list["FacultySubject"]] = relationship(
         back_populates="subject", foreign_keys="FacultySubject.subject_id"

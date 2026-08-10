@@ -294,7 +294,11 @@ def import_bulk_users_from_dataframe(rows: pd.DataFrame, user_type: str, db: Ses
             if user_type == "student":
                 enrollment_no = values.get("Enrollment No", "")
                 semester = int(values.get("Semester", 1) or 1)
-                student = Student(user_id=user.id, enrollment_no=enrollment_no, semester=semester, program=values.get("Course", "MCA"))
+                course_val = values.get("Course", "MCA")
+                prog = db.scalar(select(Program).where((Program.code == course_val) | (Program.name == course_val)))
+                prog_id = prog.id if prog else None
+                prog_code = prog.code if prog else course_val
+                student = Student(user_id=user.id, enrollment_no=enrollment_no, semester=semester, program=prog_code, program_id=prog_id)
                 db.add(student)
             audit(db, actor_id, "BULK_IMPORT", "User", user.id, f"{user_type}:{username}")
             summary["imported"] += 1
@@ -336,8 +340,8 @@ def validate_subject_import(rows: pd.DataFrame, db: Session) -> list[dict[str, o
     preview: list[dict[str, object]] = []
     seen_codes: set[str] = set()
     seen_names: set[str] = set()
-    department_lookup = {item.code.lower(): item.id for item in db.scalars(select(Department))}
-    course_lookup = {item.name.lower(): item.id for item in []}
+    department_lookup = {item.code.lower(): item.id for item in db.scalars(select(Department))} | {item.name.lower(): item.id for item in db.scalars(select(Department))}
+    program_lookup = {item.code.lower(): item.id for item in db.scalars(select(Program))} | {item.name.lower(): item.id for item in db.scalars(select(Program))}
 
     for index, row in rows.fillna("").iterrows():
         values = {key: str(value).strip() if isinstance(value, str) else str(value).strip() for key, value in row.items()}
@@ -398,6 +402,9 @@ def validate_subject_import(rows: pd.DataFrame, db: Session) -> list[dict[str, o
 
         if not course:
             errors.append("Course is required")
+        elif course.lower() not in program_lookup:
+            errors.append(f"Programme/Course '{course}' does not exist")
+
         if not department:
             errors.append("Department is required")
         elif department.lower() not in department_lookup:
@@ -440,16 +447,21 @@ def import_subjects_from_dataframe(rows: pd.DataFrame, db: Session, actor_id: in
                     summary["skipped"] += 1
                     continue
                 values = {key: str(value).strip() if isinstance(value, str) else str(value).strip() for key, value in row.items()}
-                department = db.scalar(select(Department).where(Department.name == values.get("Department", "")))
+                department = db.scalar(select(Department).where((Department.name == values.get("Department", "")) | (Department.code == values.get("Department", ""))))
+                program = db.scalar(select(Program).where((Program.code == values.get("Course", "")) | (Program.name == values.get("Course", ""))))
+                if not department and program and program.department:
+                    department = program.department
                 if not department:
                     summary["failed"] += 1
                     continue
+                program_id = program.id if program else None
                 existing = db.scalar(select(Subject).where(Subject.code == values.get("Subject Code", "")))
                 if existing:
                     if mode == "update":
                         existing.name = values.get("Subject Name", "")
                         existing.semester = int(values.get("Semester", 1))
                         existing.department_id = department.id
+                        existing.program_id = program_id
                         existing.credits = float(values.get("Credits", 0)) if values.get("Credits", "") not in {"", None} else None
                         existing.subject_type = values.get("Subject Type", "Theory")
                         existing.status = values.get("Status", "Active")
@@ -464,6 +476,7 @@ def import_subjects_from_dataframe(rows: pd.DataFrame, db: Session, actor_id: in
                             name=values.get("Subject Name", ""),
                             semester=int(values.get("Semester", 1)),
                             department_id=department.id,
+                            program_id=program_id,
                             credits=float(values.get("Credits", 0)) if values.get("Credits", "") not in {"", None} else None,
                             subject_type=values.get("Subject Type", "Theory"),
                             status=values.get("Status", "Active"),
@@ -830,7 +843,15 @@ def delete_user(db: Session, user_id: int, actor_id: int) -> None:
 # --------------------------------------------------------------------------
 
 
-def create_program(db: Session, code: str, name: str, duration_months: int = 24, total_semesters: int = 4, actor_id: int = 0) -> Program:
+def create_program(
+    db: Session,
+    code: str,
+    name: str,
+    duration_months: int = 24,
+    total_semesters: int = 4,
+    department_id: int | None = None,
+    actor_id: int = 0,
+) -> Program:
     """Create a new programme (course), e.g. BCA, MCA, M.Sc.IT, PGDCA."""
     code = code.strip().upper()
     name = name.strip()
@@ -839,7 +860,13 @@ def create_program(db: Session, code: str, name: str, duration_months: int = 24,
     existing = db.scalar(select(Program).where((Program.code == code) | (Program.name == name)))
     if existing:
         raise ValueError("A programme with that code or name already exists.")
-    program = Program(code=code, name=name, duration_months=int(duration_months), total_semesters=int(total_semesters))
+    program = Program(
+        code=code,
+        name=name,
+        duration_months=int(duration_months),
+        total_semesters=int(total_semesters),
+        department_id=department_id,
+    )
     db.add(program)
     audit(db, actor_id, "CREATE_PROGRAM", "Program", None, f"{code}:{name}")
     db.commit()
@@ -848,7 +875,7 @@ def create_program(db: Session, code: str, name: str, duration_months: int = 24,
 
 
 def update_program(db: Session, program_id: int, actor_id: int, **fields) -> Program:
-    """Update an existing programme's code/name/duration fields."""
+    """Update an existing programme's code/name/duration/department fields."""
     program = db.get(Program, program_id)
     if not program:
         raise ValueError("Programme not found.")
@@ -872,10 +899,35 @@ def update_program(db: Session, program_id: int, actor_id: int, **fields) -> Pro
         program.duration_months = int(fields["duration_months"])
     if "total_semesters" in fields:
         program.total_semesters = int(fields["total_semesters"])
+    if "department_id" in fields:
+        program.department_id = fields["department_id"]
     audit(db, actor_id, "UPDATE_PROGRAM", "Program", program.id, f"{program.code}:{program.name}")
     db.commit()
     db.refresh(program)
     return program
+
+
+def bulk_assign_subjects_to_program(
+    db: Session, subject_ids: list[int], program_id: int, semester: int | None = None, actor_id: int = 0
+) -> int:
+    """Assign multiple subjects to a given programme and optionally semester."""
+    program = db.get(Program, program_id)
+    if not program:
+        raise ValueError("Programme not found.")
+    updated_count = 0
+    for sid in subject_ids:
+        subject = db.get(Subject, sid)
+        if subject:
+            subject.program_id = program_id
+            if program.department_id:
+                subject.department_id = program.department_id
+            if semester is not None and semester > 0:
+                subject.semester = int(semester)
+            updated_count += 1
+    if updated_count > 0:
+        audit(db, actor_id, "BULK_ASSIGN_SUBJECTS_PROGRAM", "Program", program_id, f"Assigned {updated_count} subjects to {program.code}")
+        db.commit()
+    return updated_count
 
 
 def delete_program(db: Session, program_id: int, actor_id: int) -> None:

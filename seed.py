@@ -37,10 +37,12 @@ def seed() -> None:
 
         department = Department(name="Computer Science", code="CS")
         db.add(department); db.flush()
+        program = Program(code="MCA", name="Master of Computer Applications", duration_months=24, total_semesters=4, department=department)
+        db.add(program); db.flush()
         admin = User(username="admin", full_name="System Administrator", email="admin@gujaratvidyapith.org", password_hash=hash_password("Admin@123"), role=roles["Administrator"])
         faculty = User(username="faculty", full_name="Dr. Asha Patel", email="faculty@gujaratvidyapith.org", password_hash=hash_password("Faculty@123"), role=roles["Faculty"])
         db.add_all([admin, faculty]); db.flush()
-        subject = Subject(code="CS301", name="Advanced Programming Lab", semester=3, department=department)
+        subject = Subject(code="CS301", name="Advanced Programming Lab", semester=3, department=department, program=program)
         db.add(subject); db.flush()
         db.add(FacultySubject(faculty_id=faculty.id, subject_id=subject.id, assigned_by=admin.id))
         practical = Practical(subject=subject, practical_number=1, title="Repository-based application", description="Build and document a small application.", learning_outcome="Apply software engineering practices.", created_by=faculty.id, submission_date=date.today() + timedelta(days=14))
@@ -48,9 +50,9 @@ def seed() -> None:
         for index in range(1, 11):
             user = User(username=f"student{index}", full_name=f"Student {index}", email=f"student{index}@gujaratvidyapith.org", password_hash=hash_password("Student@123"), role=roles["Student"])
             db.add(user); db.flush()
-            db.add(Student(user=user, enrollment_no=f"GVCS23{index:03d}", semester=3, program="MCA"))
+            db.add(Student(user=user, enrollment_no=f"GVCS23{index:03d}", semester=3, program="MCA", program_id=program.id))
         db.commit()
-        print("Seeded: admin/Admin@123, faculty/Faculty@123 (subject CS301 assigned), student1/Student@123")
+        print("Seeded: admin/Admin@123, faculty/Faculty@123 (subject CS301 assigned), student1-10/Student@123 (MCA Sem 3)")
 
     if already_seeded:
         print("Database populated with demo data.")
