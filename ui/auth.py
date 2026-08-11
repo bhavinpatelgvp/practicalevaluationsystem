@@ -45,10 +45,41 @@ def render_login() -> None:
         #st.markdown("<div class='login-card'>", unsafe_allow_html=True)
         st.markdown("&nbsp;")
         st.markdown("### Sign in")
+
+        if "google_auth_error" in st.session_state:
+            st.error(st.session_state.pop("google_auth_error"))
+
+        # Google Sign-In
+        from services.oauth_service import is_google_auth_configured, get_google_auth_url
+
+        if is_google_auth_configured():
+            google_url = get_google_auth_url()
+            st.link_button(
+                "🌐 Sign in with Google",
+                google_url,
+                type="secondary",
+                use_container_width=True,
+                help="Sign in with your institutional Google Workspace account",
+            )
+            st.markdown(
+                "<div style='text-align: center; margin: 10px 0 14px 0; color: #888; font-size: 0.85rem;'>— OR SIGN IN WITH USERNAME & PASSWORD —</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            with st.expander("🌐 Sign in with Google (Configuration)", expanded=False):
+                st.caption(
+                    "Google OAuth is supported. To activate the **Sign in with Google** button, configure these environment variables:\n\n"
+                    "- `GOOGLE_CLIENT_ID`\n"
+                    "- `GOOGLE_CLIENT_SECRET`\n"
+                    "- `GOOGLE_REDIRECT_URI` *(default: `http://localhost:8501`)*\n"
+                    "- `GOOGLE_HOSTED_DOMAIN` *(optional, e.g. `gujaratvidyapith.org`)*"
+                )
+
         with st.form("loginform"):
-            username = _trim(st.text_input("Username or Email", placeholder="username or email"))
+            username = _trim(st.text_input("Email", placeholder="e.g. name@gujaratvidyapith.org"))
             password = st.text_input("Password", type="password")
-            role = st.selectbox("Role", options=["Select Role"] + ROLE_OPTIONS, index=0)
+            default_role_idx = ROLE_OPTIONS.index("Student") if "Student" in ROLE_OPTIONS else 0
+            role = st.selectbox("Role", options=ROLE_OPTIONS, index=default_role_idx)
             remember = st.checkbox("Remember me")
             cols = st.columns([3, 1])
             with cols[0]:
@@ -58,11 +89,9 @@ def render_login() -> None:
             if submitted:
                 # validations
                 if not username:
-                    st.error("Username is required.")
+                    st.error("Email is required.")
                 elif not password:
                     st.error("Password is required.")
-                elif role == "Select Role":
-                    st.error("Please select your role.")
                 else:
                     with SessionLocal() as db:
                         user = authenticate(db, username, password, role_name=role)
@@ -140,6 +169,116 @@ def handle_reset(token: str) -> None:
                     mark_password_reset_used(db, token)
                     db.commit()
                     st.success("Password updated. Please sign in with your new password.")
+
+
+def render_student_onboarding(db, google_info: dict) -> None:
+    """Render the first-time student profile onboarding form."""
+    from models.schema import Department, Program
+    from services.oauth_service import register_google_student, parse_student_enrollment_from_email
+    
+    email = (google_info.get("email") or "").strip()
+    google_name = (google_info.get("name") or email.split("@")[0]).strip()
+    extracted_enrollment = parse_student_enrollment_from_email(email) or email.split("@")[0].split(".gvp")[0]
+
+    st.markdown("<div style='max-width: 620px; margin: 0 auto;'>", unsafe_allow_html=True)
+    st.image("assets/gujarat-vidyapith-logo.png", width=90)
+    st.markdown("## 🎓 First-Time Student Profile Setup")
+    st.caption("Please select your academic details to complete registration and access your practicals.")
+    st.info(f"Signing in as **{email}**")
+
+    departments = list(db.scalars(select(Department).order_by(Department.name)))
+    if not departments:
+        st.error("No departments have been configured by the administrator yet. Please contact your administrator.")
+        if st.button("Back to Login"):
+            st.session_state.pop("google_pending_registration", None)
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    dept_labels = {d.id: f"{d.code} · {d.name}" for d in departments}
+    selected_dept_id = st.selectbox(
+        "Department",
+        list(dept_labels.keys()),
+        format_func=lambda x: dept_labels[x],
+        key="onboarding_dept_select",
+    )
+
+    programs = list(
+        db.scalars(
+            select(Program)
+            .where(Program.department_id == selected_dept_id)
+            .order_by(Program.code)
+        )
+    )
+    if not programs:
+        programs = list(db.scalars(select(Program).order_by(Program.code)))
+
+    if not programs:
+        st.error("No programmes configured for this department yet. Please contact your administrator.")
+        if st.button("Back to Login"):
+            st.session_state.pop("google_pending_registration", None)
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    prog_labels = {p.id: f"{p.code} · {p.name}" for p in programs}
+    selected_prog_id = st.selectbox(
+        "Programme",
+        list(prog_labels.keys()),
+        format_func=lambda x: prog_labels[x],
+        key="onboarding_prog_select",
+    )
+
+    sel_prog = db.get(Program, selected_prog_id)
+    max_semesters = sel_prog.total_semesters if sel_prog else 4
+
+    with st.form("student_onboarding_form"):
+        st.text_input("Enrollment Number", value=extracted_enrollment, disabled=True, help="Auto-detected from your GVP institutional email")
+        full_name = st.text_input("Full Name", value=google_name)
+        semester = st.selectbox(
+            "Current Semester",
+            options=list(range(1, max_semesters + 1)),
+            index=0,
+            format_func=lambda s: f"Semester {s}",
+        )
+
+        submit_col, cancel_col = st.columns([2, 1])
+        with submit_col:
+            submitted = st.form_submit_button("Complete Setup & Enter Dashboard", type="primary", use_container_width=True)
+        with cancel_col:
+            cancelled = st.form_submit_button("Cancel", use_container_width=True)
+
+        if cancelled:
+            st.session_state.pop("google_pending_registration", None)
+            st.rerun()
+
+        if submitted:
+            if not full_name.strip():
+                st.error("Please enter your full name.")
+            else:
+                user, err = register_google_student(
+                    db=db,
+                    google_info=google_info,
+                    program_id=selected_prog_id,
+                    semester=int(semester),
+                    full_name=full_name.strip(),
+                )
+                if err:
+                    st.error(err)
+                else:
+                    st.session_state.pop("google_pending_registration", None)
+                    st.session_state.user_id = user.id
+                    st.session_state.name = user.full_name
+                    st.session_state.role = user.role.name
+                    st.session_state.email = user.email
+                    st.session_state.department = getattr(user, "department", None)
+                    st.session_state.login_time = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+                    st.query_params.clear()
+                    st.query_params["session"] = create_session_token(user.id, user.role.name)
+                    st.success("Profile setup complete! Redirecting...")
+                    st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 if __name__ == "__main__":

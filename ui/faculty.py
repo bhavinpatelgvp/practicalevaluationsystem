@@ -70,19 +70,44 @@ def _bulk_practical_import(db, user_id: int) -> None:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         st.info("Required columns: **Subject Code**, **Practical Title**. Optional: Description, Learning Outcome, Difficulty (Easy/Medium/Hard), Submission Date (YYYY-MM-DD). Grade and Submission Days are no longer needed.")
-    uploaded = st.file_uploader("Choose Excel file", type=["xlsx", "xls"], key="practical_import_file")
+
+    if "bulk_practical_reset" not in st.session_state:
+        st.session_state["bulk_practical_reset"] = 0
+
+    uploader_key = f"practical_import_file_{st.session_state['bulk_practical_reset']}"
+    uploaded = st.file_uploader("Choose Excel file", type=["xlsx", "xls"], key=uploader_key)
     if uploaded is not None:
         try:
             rows = pd.read_excel(uploaded)
             preview = validate_practical_import(rows, db, user_id)
             valid_count = sum(1 for item in preview if item["ready"])
             bad_count = len(preview) - valid_count
-            st.success(f"Validated {len(preview)} row(s): {valid_count} ready, {bad_count} with errors.")
-            st.dataframe(pd.DataFrame(preview), hide_index=True, use_container_width=True)
-            if valid_count and st.button("Import validated practicals"):
-                summary = import_practicals_from_dataframe(rows, db, user_id, user_id)
-                st.success(f"Imported {summary['imported']} practical(s); skipped {summary['skipped']}; failed {summary['failed']}")
-                st.rerun()
+
+            # Summary metrics
+            mcol1, mcol2, mcol3 = st.columns(3)
+            with mcol1:
+                st.metric("Total rows", len(preview))
+            with mcol2:
+                st.metric("Ready to import", valid_count)
+            with mcol3:
+                st.metric("Rows with errors/duplicates", bad_count)
+
+            if bad_count:
+                st.warning(f"{bad_count} row(s) have issues (missing fields or already in database) and will be skipped.")
+                st.dataframe(pd.DataFrame([p for p in preview if not p["ready"]]), hide_index=True, use_container_width=True)
+
+            if valid_count == 0:
+                st.error("No new practicals to import. All items either have errors or are already present in the database.")
+            else:
+                btn_label = f"Import {valid_count} valid practical(s)" if bad_count == 0 else f"Import {valid_count} valid practical(s), skip {bad_count}"
+                if st.button(btn_label, type="primary"):
+                    summary = import_practicals_from_dataframe(rows, db, user_id, user_id)
+                    if summary["imported"] > 0:
+                        st.success(f"✅ Successfully imported **{summary['imported']}** practical(s). " + (f"Skipped {summary['skipped']} duplicate(s)." if summary['skipped'] else ""))
+                        st.session_state["bulk_practical_reset"] += 1
+                        st.rerun()
+                    else:
+                        st.warning(f"No new practicals were imported. All {summary['skipped']} practical(s) already exist in database.")
         except Exception as error:
             st.error(f"Import failed: {error}")
 
@@ -170,79 +195,74 @@ def _practical_management(db, user_id: int, subject_labels: dict[int, str]) -> N
 
 def _assignment_ui(db, user_id: int, subject_labels: dict[int, str]) -> None:
     st.subheader("Assign practical to students")
-    st.caption("Filter students by Programme, Semester, and Subject to assign practicals.")
+    st.caption("Select one of your assigned subjects, choose a practical, and assign it to students.")
 
     # 1. Fetch faculty's assigned subjects
     fac_subjects = subjects_for_faculty(db, user_id)
     if not fac_subjects:
-        st.info("No subjects have been assigned to you yet.")
+        st.info("No subjects have been assigned to you yet. Contact the administrator.")
         return
 
-    # Find distinct programmes linked to these subjects (or all programmes if subjects lack program_id)
-    linked_prog_ids = {s.program_id for s in fac_subjects if s.program_id is not None}
-    if linked_prog_ids:
-        programs = list(db.scalars(select(Program).where(Program.id.in_(linked_prog_ids)).order_by(Program.code)))
-    else:
-        programs = list(db.scalars(select(Program).order_by(Program.code)))
-
-    if not programs:
-        st.info("No programmes have been configured yet.")
-        return
-
-    prog_choices = {p.id: f"{p.code} · {p.name}" for p in programs}
+    subj_choices = {
+        s.id: f"{s.code} · {s.name} ({s.program.code if s.program else 'No Prog'} · Sem {s.semester})"
+        for s in fac_subjects
+    }
 
     col1, col2 = st.columns(2)
     with col1:
-        selected_prog_id = st.selectbox("1. Select Programme", list(prog_choices), format_func=prog_choices.get, key="assign_prog_select")
-        chosen_program = db.get(Program, selected_prog_id)
-    
-    with col2:
-        max_sem = chosen_program.total_semesters if chosen_program else 8
-        semesters_available = list(range(1, max_sem + 1))
-        selected_semester = st.selectbox("2. Select Semester", semesters_available, index=0, format_func=lambda s: f"Semester {s}", key="assign_sem_select")
-
-    # Filter faculty subjects for the selected program and semester
-    matching_subjects = [
-        s for s in fac_subjects
-        if (s.program_id == selected_prog_id or s.program_id is None) and (s.semester == selected_semester or s.semester is None)
-    ]
-    # Fallback to all faculty subjects if none strictly matched
-    if not matching_subjects:
-        matching_subjects = [s for s in fac_subjects if s.program_id == selected_prog_id or s.program_id is None]
-    if not matching_subjects:
-        matching_subjects = fac_subjects
-
-    subj_choices = {s.id: f"{s.code} · {s.name} (Sem {s.semester})" for s in matching_subjects}
-    
-    col3, col4 = st.columns(2)
-    with col3:
-        selected_subj_id = st.selectbox("3. Select Subject", list(subj_choices), format_func=subj_choices.get, key="assign_subj_select")
+        selected_subj_id = st.selectbox(
+            "1. Select Subject",
+            list(subj_choices),
+            format_func=subj_choices.get,
+            key="assign_subj_select",
+        )
         chosen_subject = db.get(Subject, selected_subj_id)
 
-    # 4. Fetch practicals for selected subject
-    practicals = list(db.scalars(select(Practical).where(Practical.subject_id == selected_subj_id).order_by(Practical.practical_number)))
+    # 2. Fetch practicals for selected subject
+    practicals = list(
+        db.scalars(
+            select(Practical)
+            .where(Practical.subject_id == selected_subj_id)
+            .order_by(Practical.practical_number)
+        )
+    )
     if not practicals:
-        with col4:
+        with col2:
             st.warning("No practicals created for this subject.")
         st.info(f"Create a practical for {chosen_subject.code} in the 'Create / manage practicals' tab first.")
         return
 
-    pract_choices = {p.id: f"P{p.practical_number} · {p.title} (Due: {p.submission_date.strftime('%d %b %Y') if p.submission_date else 'No date'})" for p in practicals}
-    with col4:
-        selected_pract_id = st.selectbox("4. Select Practical", list(pract_choices), format_func=pract_choices.get, key="assign_pract_select")
+    pract_choices = {
+        p.id: f"P{p.practical_number} · {p.title} (Due: {p.submission_date.strftime('%d %b %Y') if p.submission_date else 'No date'})"
+        for p in practicals
+    }
+    with col2:
+        selected_pract_id = st.selectbox(
+            "2. Select Practical",
+            list(pract_choices),
+            format_func=pract_choices.get,
+            key="assign_pract_select",
+        )
         selected_practical = db.get(Practical, selected_pract_id)
+
+    # Auto-detected Programme & Semester with override expander
+    prog_code = chosen_subject.program.code if chosen_subject.program else "MCA"
+    prog_id = chosen_subject.program_id
+    sem_val = chosen_subject.semester or 1
+
+    st.caption(f"Target Cohort: **{prog_code}** · **Semester {sem_val}** (derived from subject configuration)")
 
     st.markdown("---")
 
     # Fetch students enrolled in this program and semester
     student_query = select(Student).where(
-        (Student.program_id == selected_prog_id) | ((Student.program_id.is_(None)) & (Student.program == chosen_program.code)),
-        Student.semester == selected_semester,
+        (Student.program_id == prog_id) | ((Student.program_id.is_(None)) & (Student.program == prog_code)),
+        Student.semester == sem_val,
     ).order_by(Student.enrollment_no)
     students = list(db.scalars(student_query))
 
     if not students:
-        st.info(f"No students found enrolled in {chosen_program.code} - Semester {selected_semester}.")
+        st.info(f"No students found enrolled in {prog_code} - Semester {sem_val}.")
         return
 
     # Check unassigned vs assigned
@@ -253,14 +273,14 @@ def _assignment_ui(db, user_id: int, subject_labels: dict[int, str]) -> None:
     # Metrics summary
     mcol1, mcol2, mcol3 = st.columns(3)
     with mcol1:
-        st.metric(f"Total in {chosen_program.code} Sem {selected_semester}", len(students))
+        st.metric(f"Total in {prog_code} Sem {sem_val}", len(students))
     with mcol2:
         st.metric("Eligible to Assign", len(unassigned))
     with mcol3:
         st.metric("Already Assigned", len(already_assigned))
 
     if not unassigned:
-        st.success(f"This practical is already assigned to all {len(students)} enrolled student(s) in {chosen_program.code} Semester {selected_semester}.")
+        st.success(f"This practical is already assigned to all {len(students)} enrolled student(s) in {prog_code} Semester {sem_val}.")
     else:
         choices = {s.id: f"{s.enrollment_no} · {s.user.full_name}" for s in unassigned}
         scope = st.radio(

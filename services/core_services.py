@@ -30,6 +30,8 @@ from models.schema import (
 )
 
 GITHUB_RE = re.compile(r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/?$")
+GVP_STUDENT_EMAIL_RE = re.compile(r"^(\d{12})\.gvp@gujaratvidyapith\.org$", re.IGNORECASE)
+ENROLLMENT_NO_RE = re.compile(r"^\d{12}$")
 VALID_GRADES = {"A", "B", "C", "D", "E", "F"}
 FACULTY_ROLE = "Faculty"
 
@@ -149,11 +151,11 @@ def build_bulk_import_template(user_type: str) -> bytes:
     templates = {
         "student": pd.DataFrame([
             {
-                "Enrollment No.": "GVCS24001",
+                "Enrollment No.": "250160450310",
                 "Student Name": "Student Name",
-                "Email": "student@example.com",
+                "Email": "250160450310.gvp@gujaratvidyapith.org",
                 "Programme": "MCA",
-                "Semester": 3,
+                "Semester": 1,
             }
         ]),
         "faculty": pd.DataFrame([
@@ -210,6 +212,19 @@ def validate_bulk_user_import(rows: pd.DataFrame, user_type: str, db: Session) -
     seen_email: set[str] = set()
     seen_employee: set[str] = set()
 
+    # Build a lookup of valid programme codes and names for student import validation
+    if user_type == "student":
+        all_programs = list(db.scalars(select(Program)))
+        valid_programme_codes = {p.code.lower() for p in all_programs}
+        valid_programme_names = {p.name.lower() for p in all_programs}
+        programme_by_identifier = {p.code.lower(): p for p in all_programs}
+        programme_by_identifier.update({p.name.lower(): p for p in all_programs})
+    else:
+        all_programs = []
+        valid_programme_codes = set()
+        valid_programme_names = set()
+        programme_by_identifier = {}
+
     for index, row in rows.fillna("").iterrows():
         record: dict[str, object] = {
             "row": index + 2,
@@ -235,6 +250,8 @@ def validate_bulk_user_import(rows: pd.DataFrame, user_type: str, db: Session) -
             errors = []
             if not enrollment:
                 errors.append("Missing Enrollment No. (required)")
+            elif not ENROLLMENT_NO_RE.match(enrollment):
+                errors.append(f"Enrollment No. '{enrollment}' must be exactly 12 digits (e.g. 250160450310)")
             elif enrollment in seen_enrollment or db.scalar(select(User).where(User.username == enrollment)) is not None:
                 record.update({"status": "Warning", "reason": "Duplicate Enrollment No", "ready": False, "duplicate": True})
             else:
@@ -245,13 +262,37 @@ def validate_bulk_user_import(rows: pd.DataFrame, user_type: str, db: Session) -
 
             if not email:
                 errors.append("Missing Email (required)")
-            elif email in seen_email or db.scalar(select(User).where(User.email == email)) is not None:
-                record.update({"status": "Warning", "reason": "Duplicate Email", "ready": False, "duplicate": True})
             else:
-                seen_email.add(email)
+                email_match = GVP_STUDENT_EMAIL_RE.match(email)
+                if not email_match:
+                    errors.append(f"Student email '{email}' must follow format '<12-digit-enrollment>.gvp@gujaratvidyapith.org'")
+                elif enrollment and ENROLLMENT_NO_RE.match(enrollment) and email_match.group(1) != enrollment:
+                    errors.append(f"Email enrollment number ({email_match.group(1)}) does not match Enrollment No. ({enrollment})")
+                elif email in seen_email or db.scalar(select(User).where(User.email == email)) is not None:
+                    record.update({"status": "Warning", "reason": "Duplicate Email", "ready": False, "duplicate": True})
+                else:
+                    seen_email.add(email)
 
             if not programme:
                 errors.append("Missing Programme")
+            elif programme.lower() not in valid_programme_codes and programme.lower() not in valid_programme_names:
+                errors.append(
+                    f"Programme '{programme}' does not exist. "
+                    f"Please ask the administrator to add it under Master Data → Programmes first."
+                )
+            else:
+                # validate semester against programme's total_semesters
+                matched_prog = programme_by_identifier.get(programme.lower())
+                if matched_prog and semester_raw:
+                    try:
+                        sem_int = int(float(str(semester_raw).strip()))
+                        if sem_int > matched_prog.total_semesters:
+                            errors.append(
+                                f"Semester {sem_int} exceeds the total semesters ({matched_prog.total_semesters}) "
+                                f"configured for '{matched_prog.code}'."
+                            )
+                    except (ValueError, TypeError):
+                        pass  # caught below
 
             if not semester_raw:
                 errors.append("Missing Semester")
@@ -776,13 +817,21 @@ def validate_practical_import(rows: pd.DataFrame, db: Session, faculty_id: int) 
             except ValueError:
                 errors.append("Submission Date must be in YYYY-MM-DD format (e.g. 2024-12-31) or left blank")
 
-        # duplicate detection within the uploaded sheet
+        # duplicate detection within the uploaded sheet and in the database
         if subject_code and title:
             key = (subject_code, title)
             if key in seen:
                 errors.append("Duplicate practical in this sheet")
             else:
                 seen.add(key)
+
+            if subject_code in subject_owner:
+                subj_id = subject_owner[subject_code]
+                exists_in_db = db.scalar(
+                    select(Practical.id).where(Practical.subject_id == subj_id, Practical.title == title)
+                )
+                if exists_in_db is not None:
+                    errors.append(f"Practical '{title}' already exists for subject '{subject_code}'")
 
         if errors:
             record.update({"validation_status": "Error", "error_message": "; ".join(errors), "ready": False})
@@ -813,6 +862,12 @@ def import_practicals_from_dataframe(rows: pd.DataFrame, db: Session, actor_id: 
             summary["failed"] += 1
             continue
         title = values.get("Practical Title", "")
+        # Check DB duplicate guard
+        existing = db.scalar(select(Practical.id).where(Practical.subject_id == subject_id, Practical.title == title))
+        if existing is not None:
+            summary["skipped"] += 1
+            continue
+
         difficulty = values.get("Difficulty", "").strip() or "Medium"
         if difficulty not in {"Easy", "Medium", "Hard"}:
             difficulty = "Medium"

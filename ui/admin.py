@@ -16,6 +16,7 @@ from services.core_services import (
     delete_program,
     delete_subject,
     delete_user,
+    faculty_subject_ids,
     import_bulk_users_from_dataframe,
     import_subjects_from_dataframe,
     update_program,
@@ -47,9 +48,12 @@ def _subject_labels(db) -> dict[int, str]:
 
 
 def _faculty_users(db) -> list[User]:
+    faculty_role_id = _role_id(db, "Faculty")
+    admin_role_id = _role_id(db, "Administrator")
+    role_ids = [r for r in [faculty_role_id, admin_role_id] if r is not None]
     return list(
         db.scalars(
-            select(User).where(User.role_id == _role_id(db, "Faculty")).order_by(User.full_name)
+            select(User).where(User.role_id.in_(role_ids)).order_by(User.full_name)
         )
     )
 
@@ -431,19 +435,19 @@ def _faculty_crud(db, user_id: int) -> None:
         faculty_labels = {item.id: f"{item.full_name} ({item.username})" for item in faculty}
         selected = st.selectbox("Faculty member", list(faculty_labels), format_func=faculty_labels.get, key="edit_faculty_select")
         member = db.get(User, selected)
-        current_ids = [link.subject_id for link in member.faculty_subjects if link.subject_id in all_subjects]
-        with st.form("update_faculty", clear_on_submit=True):
-            edited_name = st.text_input("Full name", value=member.full_name)
-            edited_email = st.text_input("Email", value=member.email)
-            edited_active = st.checkbox("Active account", value=member.is_active)
+        current_ids = [sid for sid in faculty_subject_ids(db, member.id) if sid in all_subjects]
+        with st.form("update_faculty", clear_on_submit=False):
+            edited_name = st.text_input("Full name", value=member.full_name, key=f"ef_name_{member.id}")
+            edited_email = st.text_input("Email", value=member.email, key=f"ef_email_{member.id}")
+            edited_active = st.checkbox("Active account", value=member.is_active, key=f"ef_active_{member.id}")
             edited_subjects = st.multiselect(
                 "Assigned subjects",
                 list(all_subjects),
                 default=current_ids,
                 format_func=lambda value: all_subjects[value],
-                key="edit_faculty_subjects",
+                key=f"edit_faculty_subjects_{member.id}",
             )
-            new_password = st.text_input("Reset password (leave blank to keep)", type="password")
+            new_password = st.text_input("Reset password (leave blank to keep)", type="password", key=f"ef_pass_{member.id}")
             if st.form_submit_button("Save changes"):
                 member.full_name = edited_name.strip() or member.full_name
                 member.email = edited_email.strip() or member.email
@@ -453,11 +457,11 @@ def _faculty_crud(db, user_id: int) -> None:
                 try:
                     assign_faculty_subjects(db, member.id, edited_subjects, user_id)
                     _commit_with_audit(db, user_id, "UPDATE_FACULTY", "User", member.id)
-                    st.success("Faculty profile updated.")
+                    st.success(f"Updated {member.full_name} ({len(edited_subjects)} subject(s) assigned).")
                     _trigger_refresh()
                 except IntegrityError:
                     db.rollback(); st.error("That email is already in use by another account.")
-        if st.button(f"Delete {member.full_name}", type="secondary"):
+        if st.button(f"Delete {member.full_name}", type="secondary", key=f"del_faculty_{member.id}"):
             try:
                 delete_user(db, member.id, user_id)
                 st.success("Faculty account deleted.")
@@ -470,15 +474,69 @@ def _user_crud(db, user_id: int) -> None:
     st.subheader("User accounts")
     users = list(db.scalars(select(User).order_by(User.username)))
     roles = _roles(db)
-    if users:
+
+    # ---- Student roster: grouped by Programme → Semester ----
+    from models.schema import Student
+    all_students = list(db.scalars(select(Student).order_by(Student.program, Student.semester, Student.enrollment_no)))
+    programs_list = list(db.scalars(select(Program).order_by(Program.code)))
+
+    if all_students:
+        view_tab, all_tab = st.tabs(["Students by Programme & Semester", "All users"])
+        with view_tab:
+            if not programs_list:
+                st.info("No programmes configured yet.")
+            else:
+                prog_filter_labels = {p.id: f"{p.code} · {p.name}" for p in programs_list}
+                prog_filter_id = st.selectbox(
+                    "Filter by Programme",
+                    [None] + list(prog_filter_labels),
+                    format_func=lambda v: "All Programmes" if v is None else prog_filter_labels[v],
+                    key="student_prog_filter",
+                )
+                filtered_students = [
+                    s for s in all_students
+                    if prog_filter_id is None or s.program_id == prog_filter_id
+                ]
+                if not filtered_students:
+                    st.info("No students enrolled in this programme yet.")
+                else:
+                    # Group by semester
+                    from itertools import groupby
+                    semester_sorted = sorted(filtered_students, key=lambda s: (s.semester or 0))
+                    for sem, group in groupby(semester_sorted, key=lambda s: s.semester):
+                        group_list = list(group)
+                        with st.expander(f"Semester {sem}  ·  {len(group_list)} student(s)", expanded=True):
+                            rows_data = []
+                            for s in group_list:
+                                prog_label = s.program_ref.code if s.program_ref else s.program or "—"
+                                rows_data.append({
+                                    "Enrollment No.": s.enrollment_no,
+                                    "Name": s.user.full_name if s.user else "—",
+                                    "Email": s.user.email if s.user else "—",
+                                    "Programme": prog_label,
+                                    "Semester": s.semester,
+                                    "Active": "Yes" if (s.user and s.user.is_active) else "No",
+                                })
+                            st.dataframe(pd.DataFrame(rows_data), hide_index=True, use_container_width=True)
+        with all_tab:
+            st.dataframe(
+                pd.DataFrame(
+                    [{"Username": item.username, "Name": item.full_name, "Email": item.email, "Role": roles[item.role_id], "Active": "Yes" if item.is_active else "No"} for item in users]
+                ),
+                hide_index=True, use_container_width=True,
+            )
+    elif users:
         st.dataframe(
             pd.DataFrame(
                 [{"Username": item.username, "Name": item.full_name, "Email": item.email, "Role": roles[item.role_id], "Active": "Yes" if item.is_active else "No"} for item in users]
             ),
             hide_index=True, use_container_width=True,
         )
+
     st.caption("Create user account")
-    selected_role_id = st.selectbox("Role", list(roles), format_func=roles.get, key="create_user_role_select")
+    student_role_id = next((r_id for r_id, r_name in roles.items() if r_name == "Student"), list(roles)[0] if roles else None)
+    default_role_idx = list(roles).index(student_role_id) if student_role_id in roles else 0
+    selected_role_id = st.selectbox("Role", list(roles), index=default_role_idx, format_func=roles.get, key="create_user_role_select")
     is_student = roles.get(selected_role_id) == "Student"
     programs = _program_labels(db)
     
@@ -508,6 +566,12 @@ def _user_crud(db, user_id: int) -> None:
                 st.error("Complete all fields.")
             elif is_student and not selected_prog_id:
                 st.error("Select a Programme for the student profile.")
+            elif is_student and not re.match(r"^\d{12}$", username.strip()):
+                st.error(f"Student Enrollment No. '{username.strip()}' must be exactly 12 digits (e.g. 250160450310).")
+            elif is_student and not re.match(r"^(\d{12})\.gvp@gujaratvidyapith\.org$", email.strip(), re.IGNORECASE):
+                st.error(f"Student email '{email.strip()}' must follow the format '<12-digit-enrollment>.gvp@gujaratvidyapith.org'.")
+            elif is_student and email.strip().lower().split(".gvp@")[0] != username.strip().lower():
+                st.error(f"Student email enrollment number does not match Enrollment No. '{username.strip()}'.")
             else:
                 user = User(username=username.strip(), full_name=full_name.strip(), email=email.strip(), password_hash=hash_password(password), role_id=selected_role_id)
                 db.add(user)
@@ -619,25 +683,76 @@ def _bulk_import_ui(db, user_id: int) -> None:
     st.subheader("Bulk user import")
     st.caption("Upload an Excel file to validate and import students, faculty, or administrators.")
     import_type = st.selectbox("Import type", ["student", "faculty", "admin"], format_func=lambda value: value.title())
-    uploaded = st.file_uploader("Choose Excel file", type=["xlsx", "xls"], key="bulk_import_file")
+
+    # Use a key-counter so we can reset the uploader after a successful import
+    if "bulk_import_reset" not in st.session_state:
+        st.session_state["bulk_import_reset"] = 0
+
+    uploader_key = f"bulk_import_file_{st.session_state['bulk_import_reset']}"
+    uploaded = st.file_uploader("Choose Excel file", type=["xlsx", "xls"], key=uploader_key)
+
     if uploaded is not None:
         try:
             data = pd.read_excel(uploaded)
             preview = validate_bulk_user_import(data, import_type, db)
-            st.success(f"Validated {len(preview)} row(s).")
-            st.dataframe(pd.DataFrame(preview), hide_index=True, use_container_width=True)
-            if st.button("Import validated rows"):
-                summary = import_bulk_users_from_dataframe(data, import_type, db, user_id)
-                st.success(f"Imported {summary['imported']} user(s); skipped {summary['skipped']}; failed {summary['failed']}")
-                _trigger_refresh()
+
+            ready_count = sum(1 for r in preview if r.get("ready"))
+            error_count = len(preview) - ready_count
+
+            # Summary metrics
+            mcol1, mcol2, mcol3 = st.columns(3)
+            with mcol1:
+                st.metric("Total rows", len(preview))
+            with mcol2:
+                st.metric("Ready to import", ready_count)
+            with mcol3:
+                st.metric("Rows with errors", error_count)
+
+            # Only show the preview table when there are problems to fix
+            if error_count:
+                st.warning(f"{error_count} row(s) have issues and will be skipped. Review them below before importing.")
+                error_rows = [r for r in preview if not r.get("ready")]
+                st.dataframe(pd.DataFrame(error_rows), hide_index=True, use_container_width=True)
+
+            if ready_count == 0:
+                st.error("No rows are ready to import. Fix the errors above and re-upload.")
+            else:
+                btn_label = f"Import {ready_count} valid row(s)" if error_count == 0 else f"Import {ready_count} valid row(s), skip {error_count}"
+                if st.button(btn_label, type="primary"):
+                    summary = import_bulk_users_from_dataframe(data, import_type, db, user_id)
+                    if summary["imported"] > 0:
+                        st.success(
+                            f"✅ Successfully imported **{summary['imported']}** {import_type}(s). "
+                            + (f"Skipped {summary['skipped']} duplicate(s)." if summary["skipped"] else "")
+                            + (f" {summary['failed']} failed." if summary["failed"] else "")
+                        )
+                        # Reset the file uploader so the old file disappears
+                        st.session_state["bulk_import_reset"] += 1
+                        _trigger_refresh()
+                    else:
+                        st.warning(
+                            f"No new records were imported. "
+                            f"All {summary['skipped']} row(s) were already present in the system."
+                        )
         except Exception as error:
             st.error(f"Import failed: {error}")
+
     cols = st.columns(2)
     with cols[0]:
         template_bytes = build_bulk_import_template(import_type)
-        st.download_button("Download sample template", template_bytes, file_name=f"{import_type}_template.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button(
+            "⬇ Download sample template",
+            template_bytes,
+            file_name=f"{import_type}_import_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
     with cols[1]:
-        st.info("Templates include the expected columns for each import type.")
+        if import_type == "student":
+            st.info("Required: **Enrollment No.**, **Student Name**, **Email**, **Programme**, **Semester**. Programme must be added in Master Data first.")
+        elif import_type == "faculty":
+            st.info("Required: **Faculty ID**, **Name**, **Email**, **Mobile**, **Department**, **Designation**.")
+        else:
+            st.info("Required: **Employee ID**, **Name**, **Email**, **Mobile**, **Role**.")
 
 
 def administrator_page(db, user: User) -> None:

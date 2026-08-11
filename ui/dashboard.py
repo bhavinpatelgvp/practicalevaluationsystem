@@ -97,9 +97,12 @@ def _score_to_grade(score: float) -> str:
     return "F"
 
 
-def dashboard(db, user: User) -> None:
-    st.title(f"Good day, {user.full_name.split()[0]}")
-    st.caption("Choose a dashboard view to switch between the lightweight practical tracker and the full analytics workspace.")
+def dashboard(db, user: User, active_role: str | None = None, *args, **kwargs) -> None:
+    role_val = active_role or kwargs.get("active_role") or (user.role.name if getattr(user, "role", None) else "Administrator")
+    effective_role = str(role_val)
+    first_name = user.full_name.split()[0] if user.full_name else user.username
+    st.title(f"Good day, {first_name}")
+    st.caption(f"Viewing as **{effective_role}** · Choose a dashboard view to switch between practical tracking and interactive analytics.")
 
     dashboard_view = st.radio(
         "Dashboard view",
@@ -117,7 +120,7 @@ def dashboard(db, user: User) -> None:
         from services.core_services import faculty_subject_ids
         
         query = select(Assignment).join(Assignment.practical).join(Assignment.student).join(Student.user)
-        if user.role.name == "Faculty":
+        if effective_role == "Faculty":
             subject_ids = faculty_subject_ids(db, user.id)
             query = query.where(Practical.subject_id.in_(subject_ids))
         assignments = db.scalars(query.order_by(Assignment.deadline)).all()
@@ -157,7 +160,7 @@ def dashboard(db, user: User) -> None:
     from services.core_services import faculty_subject_ids
     
     query = select(Assignment).order_by(Assignment.assigned_at)
-    if user.role.name == "Faculty":
+    if effective_role == "Faculty":
         subject_ids = faculty_subject_ids(db, user.id)
         query = query.join(Assignment.practical).where(Practical.subject_id.in_(subject_ids))
     base_assignments = db.scalars(query).all()
@@ -483,7 +486,7 @@ def dashboard(db, user: User) -> None:
         st.metric("Pending", int((filtered_frame["Status"] != "Evaluated").sum()))
 
 
-def student_dashboard(db, student: Student) -> None:
+def student_dashboard(db, student: Student, *args, **kwargs) -> None:
     assignments = db.scalars(
         select(Assignment)
         .where(Assignment.student_id == student.id)

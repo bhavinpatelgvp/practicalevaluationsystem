@@ -1,10 +1,10 @@
-from datetime import date, timedelta
 from core.database import SessionLocal, init_db
 from services.core_services import ensure_role, ensure_permission, grant_role_permission
 from services.auth_service import hash_password
-from models.schema import Department, FacultySubject, Practical, Student, Subject, User
+from models.schema import Department, Program, Role, User
 
 LOGIN_ROLES = ["Administrator", "Faculty", "Student", "External Examiner", "Coordinator"]
+
 # permission_code -> (description, list of role names that should receive it)
 CORE_PERMISSIONS = {
     "admin.access": ("Access administrator workspace and management features", ["Administrator"]),
@@ -15,12 +15,11 @@ CORE_PERMISSIONS = {
 
 def seed() -> None:
     init_db()
-    already_seeded = False
     with SessionLocal() as db:
-        # Seed roles for every login role (idempotent).
+        # 1. Seed RBAC roles (idempotent)
         roles = {name: ensure_role(db, name) for name in LOGIN_ROLES}
 
-        # Seed permissions and assign to roles (idempotent).
+        # 2. Seed RBAC permissions and grant to roles (idempotent)
         for code, (description, role_names) in CORE_PERMISSIONS.items():
             perm = ensure_permission(db, code, description)
             for role_name in role_names:
@@ -28,34 +27,44 @@ def seed() -> None:
         db.commit()
         print("Permissions synced:", ", ".join(CORE_PERMISSIONS))
 
-        # Only create demo data if the database is empty.
-        if db.query(User).first():
-            db.close()
-            print("Database already contains data; permissions have been refreshed.")
+        # 3. Seed default base Department & Program if not existing
+        department = db.query(Department).filter_by(code="CS").first()
+        if not department:
+            department = Department(name="Department of Computer Science", code="CS")
+            db.add(department)
+            db.flush()
+
+        program = db.query(Program).filter_by(code="MCA").first()
+        if not program:
+            program = Program(
+                code="MCA",
+                name="Master of Computer Applications",
+                duration_months=24,
+                total_semesters=4,
+                department=department,
+            )
+            db.add(program)
+            db.flush()
+
+        # 4. Seed ONLY ONE Administrator user
+        admin_role = roles["Administrator"]
+        existing_admin = db.query(User).filter_by(role_id=admin_role.id).first()
+        if existing_admin:
+            print(f"Administrator already exists: {existing_admin.username} ({existing_admin.email})")
+            db.commit()
             return
-        already_seeded = True
 
-        department = Department(name="Computer Science", code="CS")
-        db.add(department); db.flush()
-        program = Program(code="MCA", name="Master of Computer Applications", duration_months=24, total_semesters=4, department=department)
-        db.add(program); db.flush()
-        admin = User(username="admin", full_name="System Administrator", email="admin@gujaratvidyapith.org", password_hash=hash_password("Admin@123"), role=roles["Administrator"])
-        faculty = User(username="faculty", full_name="Dr. Asha Patel", email="faculty@gujaratvidyapith.org", password_hash=hash_password("Faculty@123"), role=roles["Faculty"])
-        db.add_all([admin, faculty]); db.flush()
-        subject = Subject(code="CS301", name="Advanced Programming Lab", semester=3, department=department, program=program)
-        db.add(subject); db.flush()
-        db.add(FacultySubject(faculty_id=faculty.id, subject_id=subject.id, assigned_by=admin.id))
-        practical = Practical(subject=subject, practical_number=1, title="Repository-based application", description="Build and document a small application.", learning_outcome="Apply software engineering practices.", created_by=faculty.id, submission_date=date.today() + timedelta(days=14))
-        db.add(practical)
-        for index in range(1, 11):
-            user = User(username=f"student{index}", full_name=f"Student {index}", email=f"student{index}@gujaratvidyapith.org", password_hash=hash_password("Student@123"), role=roles["Student"])
-            db.add(user); db.flush()
-            db.add(Student(user=user, enrollment_no=f"GVCS23{index:03d}", semester=3, program="MCA", program_id=program.id))
+        admin = User(
+            username="admin@gujaratvidyapith.org",
+            full_name="System Administrator",
+            email="admin@gujaratvidyapith.org",
+            password_hash=hash_password("Admin@123"),
+            role=admin_role,
+            is_active=True,
+        )
+        db.add(admin)
         db.commit()
-        print("Seeded: admin/Admin@123, faculty/Faculty@123 (subject CS301 assigned), student1-10/Student@123 (MCA Sem 3)")
-
-    if already_seeded:
-        print("Database populated with demo data.")
+        print("Successfully seeded 1 Administrator: admin@gujaratvidyapith.org / Admin@123")
 
 
 if __name__ == "__main__":
