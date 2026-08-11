@@ -139,15 +139,30 @@ with SessionLocal() as db:
         with st.sidebar:
           st.markdown("**Practical Evaluation System**")
           st.caption(f"{user.full_name} · {user.role.name}")
+          
+          # View As role switcher for users with elevated/multi-role capabilities
           if user.role.name == "Administrator":
+            view_choices = ["Administrator", "Faculty"]
+            active_view = st.selectbox(
+                "👁️ View as",
+                view_choices,
+                index=0,
+                key="app_active_view",
+                help="Switch between Administrator management view and Faculty teaching view",
+            )
+          else:
+            active_view = user.role.name
+
+          if active_view == "Administrator":
             workspace_options = ["Dashboard", "Administration"]
             welcome = "Manages master data, faculty, and users."
-          elif user.role.name == "Faculty":
+          elif active_view == "Faculty":
             workspace_options = ["Dashboard", "My subjects"]
             welcome = "Works within the subjects assigned to you."
           else:
             workspace_options = ["Dashboard", "Practicals"]
             welcome = ""
+
           if welcome:
             st.caption(welcome)
           st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
@@ -159,17 +174,18 @@ with SessionLocal() as db:
             st.session_state.clear()
             st.query_params.clear()
             st.rerun()
+
         if page == "Dashboard":
-            if user.role.name == "Student":
+            if active_view == "Student":
                 if user.student:
                     student_dashboard(db, user.student)
                 else:
                     st.error("Your student profile is incomplete. Please contact the administrator.")
             else:
-                dashboard(db, user)
-        elif page == "Administration" and user.role.name == "Administrator":
+                dashboard(db, user, active_role=active_view)
+        elif page == "Administration" and user.role.name == "Administrator" and active_view == "Administrator":
             administrator_page(db, user)
-        elif page == "My subjects" and user.role.name == "Faculty":
+        elif page == "My subjects" and user.role.name in ["Faculty", "Administrator"]:
             faculty_page(db, user)
         elif page == "Practicals" and user.role.name == "Student":
             if user.student:
@@ -177,7 +193,7 @@ with SessionLocal() as db:
             else:
                 st.error("Your student profile is incomplete. Please contact the administrator.")
         else:
-            st.error("No student profile is linked to this account.")
+            st.error("You do not have permission to access this page.")
             
         with st.sidebar:
           st.markdown(

@@ -48,9 +48,12 @@ def _subject_labels(db) -> dict[int, str]:
 
 
 def _faculty_users(db) -> list[User]:
+    faculty_role_id = _role_id(db, "Faculty")
+    admin_role_id = _role_id(db, "Administrator")
+    role_ids = [r for r in [faculty_role_id, admin_role_id] if r is not None]
     return list(
         db.scalars(
-            select(User).where(User.role_id == _role_id(db, "Faculty")).order_by(User.full_name)
+            select(User).where(User.role_id.in_(role_ids)).order_by(User.full_name)
         )
     )
 
