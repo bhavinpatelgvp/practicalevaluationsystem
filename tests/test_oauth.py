@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from core.database import Base
 from core.config import Settings
-from models.schema import Department, Role, User
+from models.schema import Department, Role, Student, User
 from services.auth_service import ensure_role, hash_password
 from services.oauth_service import (
     authenticate_google_user,
@@ -71,20 +71,86 @@ def test_authenticate_google_user_success():
     assert authenticated_user.last_login is not None
 
 
-def test_authenticate_google_user_auto_provisions_student():
+def test_authenticate_google_user_first_time_student_setup():
     db = setup_db()
     google_info = {
-        "email": "newstudent@gujaratvidyapith.org",
+        "email": "250160450310.gvp@gujaratvidyapith.org",
         "name": "New Student",
+    }
+    authenticated_user, err = authenticate_google_user(db, google_info)
+    assert authenticated_user is None
+    assert err == "FIRST_TIME_STUDENT_SETUP"
+
+
+def test_register_google_student_creates_account_and_profile():
+    from models.schema import Department, Program
+    from services.oauth_service import register_google_student
+    db = setup_db()
+    dept = Department(name="Computer Science", code="CS")
+    db.add(dept)
+    db.flush()
+    prog = Program(name="Master of Computer Applications", code="MCA", total_semesters=4, department_id=dept.id)
+    db.add(prog)
+    db.commit()
+
+    google_info = {
+        "email": "250160450310.gvp@gujaratvidyapith.org",
+        "name": "Rohan Sharma",
+    }
+    user, err = register_google_student(db, google_info, program_id=prog.id, semester=2, full_name="Rohan Sharma")
+    assert err is None
+    assert user is not None
+    assert user.username == "250160450310"
+    assert user.email == "250160450310.gvp@gujaratvidyapith.org"
+    assert user.student is not None
+    assert user.student.enrollment_no == "250160450310"
+    assert user.student.program == "MCA"
+    assert user.student.semester == 2
+
+    # Verify subsequent login succeeds directly without onboarding
+    authenticated_user, auth_err = authenticate_google_user(db, google_info)
+    assert auth_err is None
+    assert authenticated_user is not None
+    assert authenticated_user.id == user.id
+
+
+def test_authenticate_google_user_unregistered_faculty_fails():
+    db = setup_db()
+    google_info = {
+        "email": "newfaculty@gujaratvidyapith.org",
+        "name": "Unregistered Faculty",
+    }
+    authenticated_user, err = authenticate_google_user(db, google_info)
+    assert authenticated_user is None
+    assert "not registered" in err.lower()
+
+
+def test_authenticate_google_user_preregistered_student_success():
+    db = setup_db()
+    student_role = ensure_role(db, "Student")
+    user = User(
+        username="250160450310",
+        full_name="Valid Student",
+        email="250160450310.gvp@gujaratvidyapith.org",
+        password_hash=hash_password("Dummy@123"),
+        role_id=student_role.id,
+        is_active=True,
+    )
+    db.add(user)
+    db.flush()
+    student = Student(user_id=user.id, enrollment_no="250160450310", semester=1, program="MCA")
+    db.add(student)
+    db.commit()
+
+    google_info = {
+        "email": "250160450310.gvp@gujaratvidyapith.org",
+        "name": "Valid Student",
     }
     authenticated_user, err = authenticate_google_user(db, google_info)
     assert err is None
     assert authenticated_user is not None
-    assert authenticated_user.username == "newstudent@gujaratvidyapith.org"
-    assert authenticated_user.email == "newstudent@gujaratvidyapith.org"
-    assert authenticated_user.role.name == "Student"
-    assert authenticated_user.student is not None
-    assert authenticated_user.student.enrollment_no == "newstudent"
+    assert authenticated_user.username == "250160450310"
+    assert authenticated_user.email == "250160450310.gvp@gujaratvidyapith.org"
 
 
 def test_authenticate_google_user_domain_restriction():

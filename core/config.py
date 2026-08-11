@@ -57,16 +57,35 @@ _load_env_file()
 
 
 def _get_setting(key: str, default: str = "") -> str:
-    """Get setting from environment / .env, with fallback to Streamlit secrets."""
+    """Get setting from Streamlit secrets (with nested support) or environment."""
+    # 1. Try Streamlit secrets first (for Streamlit Community Cloud & .streamlit/secrets.toml)
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and st.secrets:
+            # Direct key match (e.g. GOOGLE_CLIENT_ID)
+            if key in st.secrets:
+                return str(st.secrets[key])
+            # Lowercase key match (e.g. google_client_id)
+            if key.lower() in st.secrets:
+                return str(st.secrets[key.lower()])
+            # Nested section match (e.g. [google] client_id = "..." for GOOGLE_CLIENT_ID)
+            if "_" in key:
+                section, subkey = key.lower().split("_", 1)
+                if section in st.secrets:
+                    sec_obj = st.secrets[section]
+                    if hasattr(sec_obj, "get") and subkey in sec_obj:
+                        return str(sec_obj[subkey])
+                    if hasattr(sec_obj, subkey):
+                        return str(getattr(sec_obj, subkey))
+    except Exception:
+        pass
+
+    # 2. Try OS environment / .env
     val = os.getenv(key)
     if val:
         return val
-    try:
-        import streamlit as st
-        if hasattr(st, "secrets") and key in st.secrets:
-            return str(st.secrets[key])
-    except Exception:
-        pass
+
+    # 3. Fallback default
     return default
 
 

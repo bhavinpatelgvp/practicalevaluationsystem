@@ -566,6 +566,12 @@ def _user_crud(db, user_id: int) -> None:
                 st.error("Complete all fields.")
             elif is_student and not selected_prog_id:
                 st.error("Select a Programme for the student profile.")
+            elif is_student and not re.match(r"^\d{12}$", username.strip()):
+                st.error(f"Student Enrollment No. '{username.strip()}' must be exactly 12 digits (e.g. 250160450310).")
+            elif is_student and not re.match(r"^(\d{12})\.gvp@gujaratvidyapith\.org$", email.strip(), re.IGNORECASE):
+                st.error(f"Student email '{email.strip()}' must follow the format '<12-digit-enrollment>.gvp@gujaratvidyapith.org'.")
+            elif is_student and email.strip().lower().split(".gvp@")[0] != username.strip().lower():
+                st.error(f"Student email enrollment number does not match Enrollment No. '{username.strip()}'.")
             else:
                 user = User(username=username.strip(), full_name=full_name.strip(), email=email.strip(), password_hash=hash_password(password), role_id=selected_role_id)
                 db.add(user)

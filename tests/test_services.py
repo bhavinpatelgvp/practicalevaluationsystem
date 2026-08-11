@@ -230,9 +230,11 @@ def test_validate_bulk_user_import_marks_missing_and_duplicate_rows():
 
     rows = pd.DataFrame(
         [
-            {"Enrollment No.": "E100", "Student Name": "Alice", "Email": "alice@example.com", "Programme": "MCA", "Semester": 3},
-            {"Enrollment No.": "", "Student Name": "Bob", "Email": "bob@example.com", "Programme": "MCA", "Semester": 3},
-            {"Enrollment No.": "E100", "Student Name": "Alice 2", "Email": "alice2@example.com", "Programme": "MCA", "Semester": 3},
+            {"Enrollment No.": "250160450001", "Student Name": "Alice", "Email": "250160450001.gvp@gujaratvidyapith.org", "Programme": "MCA", "Semester": 3},
+            {"Enrollment No.": "", "Student Name": "Bob", "Email": "250160450002.gvp@gujaratvidyapith.org", "Programme": "MCA", "Semester": 3},
+            {"Enrollment No.": "250160450001", "Student Name": "Alice 2", "Email": "250160450001.gvp@gujaratvidyapith.org", "Programme": "MCA", "Semester": 3},
+            {"Enrollment No.": "12345", "Student Name": "Short", "Email": "12345.gvp@gujaratvidyapith.org", "Programme": "MCA", "Semester": 3},
+            {"Enrollment No.": "250160450003", "Student Name": "Charlie", "Email": "charlie@gmail.com", "Programme": "MCA", "Semester": 3},
         ]
     )
 
@@ -242,6 +244,10 @@ def test_validate_bulk_user_import_marks_missing_and_duplicate_rows():
     assert preview[1]["ready"] is False
     assert "required" in preview[1]["reason"].lower()
     assert preview[2]["duplicate"] is True
+    assert preview[3]["ready"] is False
+    assert "12 digits" in preview[3]["reason"]
+    assert preview[4]["ready"] is False
+    assert "gujaratvidyapith.org" in preview[4]["reason"]
 
 
 def test_build_practical_import_template_returns_bytes():
@@ -339,8 +345,8 @@ def test_student_bulk_import_simplified_format():
 
     rows = pd.DataFrame(
         [
-            {"Enrollment No.": "GVCS24101", "Student Name": "Rohan Sharma", "Email": "rohan@example.com", "Programme": "MCA", "Semester": 3},
-            {"Enrollment No.": "GVCS24102", "Student Name": "Pooja Patel", "Email": "pooja@example.com", "Programme": "MCA", "Semester": 3},
+            {"Enrollment No.": "250160450101", "Student Name": "Rohan Sharma", "Email": "250160450101.gvp@gujaratvidyapith.org", "Programme": "MCA", "Semester": 3},
+            {"Enrollment No.": "250160450102", "Student Name": "Pooja Patel", "Email": "250160450102.gvp@gujaratvidyapith.org", "Programme": "MCA", "Semester": 3},
         ]
     )
 
@@ -348,9 +354,11 @@ def test_student_bulk_import_simplified_format():
     assert summary["imported"] == 2
     assert summary["failed"] == 0
 
-    student1 = db.scalar(select(Student).where(Student.enrollment_no == "GVCS24101"))
+    student1 = db.scalar(select(Student).where(Student.enrollment_no == "250160450101"))
     assert student1 is not None
+    assert student1.program_id == prog.id
     assert student1.user.full_name == "Rohan Sharma"
+    assert student1.user.email == "250160450101.gvp@gujaratvidyapith.org"
     assert student1.program_id == prog.id
     assert student1.program == "MCA"
     assert student1.semester == 3

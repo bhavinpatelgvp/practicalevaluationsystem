@@ -30,6 +30,8 @@ from models.schema import (
 )
 
 GITHUB_RE = re.compile(r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/?$")
+GVP_STUDENT_EMAIL_RE = re.compile(r"^(\d{12})\.gvp@gujaratvidyapith\.org$", re.IGNORECASE)
+ENROLLMENT_NO_RE = re.compile(r"^\d{12}$")
 VALID_GRADES = {"A", "B", "C", "D", "E", "F"}
 FACULTY_ROLE = "Faculty"
 
@@ -149,11 +151,11 @@ def build_bulk_import_template(user_type: str) -> bytes:
     templates = {
         "student": pd.DataFrame([
             {
-                "Enrollment No.": "GVCS24001",
+                "Enrollment No.": "250160450310",
                 "Student Name": "Student Name",
-                "Email": "student@example.com",
+                "Email": "250160450310.gvp@gujaratvidyapith.org",
                 "Programme": "MCA",
-                "Semester": 3,
+                "Semester": 1,
             }
         ]),
         "faculty": pd.DataFrame([
@@ -248,6 +250,8 @@ def validate_bulk_user_import(rows: pd.DataFrame, user_type: str, db: Session) -
             errors = []
             if not enrollment:
                 errors.append("Missing Enrollment No. (required)")
+            elif not ENROLLMENT_NO_RE.match(enrollment):
+                errors.append(f"Enrollment No. '{enrollment}' must be exactly 12 digits (e.g. 250160450310)")
             elif enrollment in seen_enrollment or db.scalar(select(User).where(User.username == enrollment)) is not None:
                 record.update({"status": "Warning", "reason": "Duplicate Enrollment No", "ready": False, "duplicate": True})
             else:
@@ -258,10 +262,16 @@ def validate_bulk_user_import(rows: pd.DataFrame, user_type: str, db: Session) -
 
             if not email:
                 errors.append("Missing Email (required)")
-            elif email in seen_email or db.scalar(select(User).where(User.email == email)) is not None:
-                record.update({"status": "Warning", "reason": "Duplicate Email", "ready": False, "duplicate": True})
             else:
-                seen_email.add(email)
+                email_match = GVP_STUDENT_EMAIL_RE.match(email)
+                if not email_match:
+                    errors.append(f"Student email '{email}' must follow format '<12-digit-enrollment>.gvp@gujaratvidyapith.org'")
+                elif enrollment and ENROLLMENT_NO_RE.match(enrollment) and email_match.group(1) != enrollment:
+                    errors.append(f"Email enrollment number ({email_match.group(1)}) does not match Enrollment No. ({enrollment})")
+                elif email in seen_email or db.scalar(select(User).where(User.email == email)) is not None:
+                    record.update({"status": "Warning", "reason": "Duplicate Email", "ready": False, "duplicate": True})
+                else:
+                    seen_email.add(email)
 
             if not programme:
                 errors.append("Missing Programme")

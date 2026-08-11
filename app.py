@@ -98,6 +98,10 @@ with SessionLocal() as db:
                     st.query_params.clear()
                     st.query_params["session"] = create_session_token(oauth_user.id, oauth_user.role.name)
                     st.rerun()
+                elif oauth_err in ["FIRST_TIME_STUDENT_SETUP", "NEEDS_STUDENT_PROFILE"]:
+                    st.session_state["google_pending_registration"] = google_info
+                    st.query_params.clear()
+                    st.rerun()
                 else:
                     st.session_state["google_auth_error"] = oauth_err
                     st.query_params.clear()
@@ -108,15 +112,19 @@ with SessionLocal() as db:
                 st.rerun()
 
     if not st.session_state.get("user_id"):
-      # handle password reset token in query params
-      def _get_query_params():
-        return st.query_params
+        if "google_pending_registration" in st.session_state:
+            from ui.auth import render_student_onboarding
+            render_student_onboarding(db, st.session_state["google_pending_registration"])
+        else:
+            # handle password reset token in query params
+            def _get_query_params():
+                return st.query_params
 
-      params = _get_query_params()
-      if "reset" in params:
-        handle_reset(params.get("reset"))
-      else:
-        render_login()
+            params = _get_query_params()
+            if "reset" in params:
+                handle_reset(params.get("reset"))
+            else:
+                render_login()
     else:
         login_time_str = st.session_state.get("login_time")
         if login_time_str:

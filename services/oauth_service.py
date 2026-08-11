@@ -75,18 +75,34 @@ def exchange_code_for_user_info(code: str, redirect_uri: str | None = None) -> t
         return None, f"Connection error contacting Google OAuth: {str(e)}"
 
 
+import re
 import secrets
 from models.schema import Program, Student, User
 from services.auth_service import ensure_role, hash_password, record_login, reset_failed_attempts, utc_now
+
+STUDENT_EMAIL_RE = re.compile(r"^(\d{12})(?:\.gvp)?@gujaratvidyapith\.org$", re.IGNORECASE)
+
+
+def parse_student_enrollment_from_email(email: str) -> str | None:
+    """Extract a 12-digit enrollment number from a student institutional email if present."""
+    if not email:
+        return None
+    m = STUDENT_EMAIL_RE.match(email.strip())
+    if m:
+        return m.group(1)
+    # Also check if prefix before @ or .gvp is exactly 12 digits
+    prefix = email.strip().split("@")[0].split(".gvp")[0]
+    if re.match(r"^\d{12}$", prefix):
+        return prefix
+    return None
 
 
 def authenticate_google_user(db: Session, google_info: dict, ip: str | None = None) -> tuple[User | None, str | None]:
     """Authenticate or verify a user from Google profile info.
     
-    If the user does not exist, auto-provisions a new account with:
-    - username = email
-    - default role = Student
-    - linked Student profile
+    If an existing user is found, logs them in.
+    If a student signs in for the first time, returns ('FIRST_TIME_STUDENT_SETUP')
+    so the frontend can prompt for Department, Programme, and Semester selection.
     """
     email = (google_info.get("email") or "").strip()
     if not email:
@@ -101,36 +117,14 @@ def authenticate_google_user(db: Session, google_info: dict, ip: str | None = No
     user = db.scalar(select(User).where((func.lower(User.email) == email.lower()) | (func.lower(User.username) == email.lower())))
     
     if not user:
-        # Auto-create new user with email as username and default role as Student
-        student_role = ensure_role(db, "Student")
-        full_name = (google_info.get("name") or email.split("@")[0]).strip()
-        user = User(
-            username=email.lower(),
-            full_name=full_name,
-            email=email.lower(),
-            password_hash=hash_password(secrets.token_urlsafe(16)),
-            role_id=student_role.id,
-            is_active=True,
+        enrollment_no = parse_student_enrollment_from_email(email)
+        if enrollment_no or ".gvp@" in email.lower():
+            # Flag for first-time student onboarding (Department/Programme/Semester selection)
+            return None, "FIRST_TIME_STUDENT_SETUP"
+        return None, (
+            "Your Google account is not registered in this system. "
+            "Please contact your administrator to add your account before signing in."
         )
-        db.add(user)
-        db.flush()
-
-        # Create linked Student profile
-        first_prog = db.scalar(select(Program).order_by(Program.id))
-        enrollment_no = email.split("@")[0]
-        existing_stud = db.scalar(select(Student).where(Student.enrollment_no == enrollment_no))
-        if existing_stud:
-            enrollment_no = f"{enrollment_no}_{user.id}"
-
-        student_profile = Student(
-            user_id=user.id,
-            enrollment_no=enrollment_no,
-            semester=1,
-            program=first_prog.code if first_prog else "MCA",
-            program_id=first_prog.id if first_prog else None,
-        )
-        db.add(student_profile)
-        db.flush()
 
     if not user.is_active:
         record_login(db, user, email, user.role.name if user.role else None, "failed:account-inactive", ip)
@@ -142,10 +136,95 @@ def authenticate_google_user(db: Session, google_info: dict, ip: str | None = No
         db.commit()
         return None, "Your account is locked due to too many failed attempts. Please contact the administrator."
 
+    # If user exists but is a student missing a student profile
+    if user.role and user.role.name == "Student" and not user.student:
+        return None, "NEEDS_STUDENT_PROFILE"
+
+    # If user has default username as full_name or empty, update with Google full name
+    google_name = (google_info.get("name") or "").strip()
+    if google_name and (not user.full_name or user.full_name == user.username):
+        user.full_name = google_name
+
     # Successful login
     reset_failed_attempts(db, user)
     user.last_login = utc_now()
     db.add(user)
     record_login(db, user, user.username, user.role.name if user.role else None, "success:google-oauth", ip)
+    db.commit()
+    return user, None
+
+
+def register_google_student(
+    db: Session,
+    google_info: dict,
+    program_id: int,
+    semester: int,
+    full_name: str | None = None,
+    ip: str | None = None,
+) -> tuple[User | None, str | None]:
+    """Create or complete a Student account during first-time Google sign-in."""
+    email = (google_info.get("email") or "").strip()
+    if not email:
+        return None, "Google account does not provide an email address."
+
+    enrollment_no = parse_student_enrollment_from_email(email) or email.split("@")[0].split(".gvp")[0]
+    if not enrollment_no:
+        return None, "Unable to determine enrollment number from email address."
+
+    program = db.get(Program, program_id)
+    if not program:
+        return None, "Selected Programme does not exist."
+
+    if semester < 1 or semester > program.total_semesters:
+        return None, f"Semester must be between 1 and {program.total_semesters} for {program.code}."
+
+    student_role = ensure_role(db, "Student")
+    name = (full_name or google_info.get("name") or enrollment_no).strip()
+
+    user = db.scalar(select(User).where((func.lower(User.email) == email.lower()) | (func.lower(User.username) == enrollment_no.lower())))
+    if not user:
+        user = User(
+            username=enrollment_no,
+            full_name=name,
+            email=email.lower(),
+            password_hash=hash_password(secrets.token_urlsafe(16)),
+            role_id=student_role.id,
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+    else:
+        user.full_name = name
+        user.role_id = student_role.id
+        user.is_active = True
+
+    # Link or update Student profile
+    student = db.scalar(select(Student).where(Student.user_id == user.id))
+    if not student:
+        # Check if enrollment_no already exists on another student
+        existing_enrollment = db.scalar(select(Student).where(Student.enrollment_no == enrollment_no))
+        if existing_enrollment and existing_enrollment.user_id != user.id:
+            return None, f"Enrollment number '{enrollment_no}' is already linked to another account."
+
+        student = Student(
+            user_id=user.id,
+            enrollment_no=enrollment_no,
+            semester=semester,
+            program=program.code,
+            program_id=program.id,
+        )
+        db.add(student)
+    else:
+        student.semester = semester
+        student.program = program.code
+        student.program_id = program.id
+
+    db.flush()
+
+    # Record login and commit
+    reset_failed_attempts(db, user)
+    user.last_login = utc_now()
+    db.add(user)
+    record_login(db, user, user.username, "Student", "success:google-oauth-onboarding", ip)
     db.commit()
     return user, None
