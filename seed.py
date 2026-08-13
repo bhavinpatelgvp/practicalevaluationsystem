@@ -63,13 +63,13 @@ def _resolve_admin_credentials() -> tuple[str, str]:
             "│  ADMIN credentials are not configured.              │\n"
             "│                                                     │\n"
             "│  Local dev — add to .env:                           │\n"
-            "│    ADMIN_EMAIL=admin@gujaratvidyapith.org           │\n"
-            "│    ADMIN_PASSWORD=YourStrongPassword@2025           │\n"
+            "│    ADMIN_EMAIL=admindemo@gujaratvidyapith.org       │\n"
+            "│    ADMIN_PASSWORD=Admin@Demo                        │\n"
             "│                                                     │\n"
             "│  Streamlit Cloud — add to App Secrets:              │\n"
             "│    [admin]                                          │\n"
-            "│    email    = \"admin@gujaratvidyapith.org\"          │\n"
-            "│    password = \"YourStrongPassword@2025\"             │\n"
+            "│    email    = \"admindemo@gujaratvidyapith.org \"   │\n"
+            "│    password = \"Admin@12023\"                       │\n"
             "└─────────────────────────────────────────────────────┘\n"
         )
 
