@@ -62,7 +62,7 @@ db.sqlite3
 db.sqlite3-journal
 
 # SQLite databases — never commit DB files to version control
-*.db
+# *.db
 *.sqlite3
 
 # Flask stuff:
