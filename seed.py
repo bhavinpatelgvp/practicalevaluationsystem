@@ -36,25 +36,49 @@ CORE_PERMISSIONS = {
 def _resolve_admin_credentials() -> tuple[str, str]:
     """Return (email, password) from secrets/env — never from hardcoded values.
 
-    Priority:
-    1. st.secrets [admin] section  → used on Streamlit Community Cloud
-    2. ADMIN_EMAIL / ADMIN_PASSWORD environment variables  → used locally via .env
-    3. Raise RuntimeError so the app fails loudly instead of creating insecure defaults.
+    Looks for credentials in this priority order:
+    1. st.secrets [admin] section  → [admin] email = "..." password = "..."
+    2. st.secrets flat keys        → ADMIN_EMAIL / ADMIN_PASSWORD  (or admin / password)
+    3. Environment variables       → ADMIN_EMAIL / ADMIN_PASSWORD in .env
+    4. Raises RuntimeError with a setup guide
     """
-    # Try nested st.secrets [admin] section first
-    email    = _get_setting("ADMIN_EMAIL", "")
-    password = _get_setting("ADMIN_PASSWORD", "")
+    email = ""
+    password = ""
 
-    # Also try the nested [admin] section directly (st.secrets["admin"]["email"])
-    if not email or not password:
-        try:
-            import streamlit as st
-            if hasattr(st, "secrets") and "admin" in st.secrets:
-                admin_sec = st.secrets["admin"]
-                email    = email    or str(admin_sec.get("email",    ""))
-                password = password or str(admin_sec.get("password", ""))
-        except Exception:
-            pass
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and st.secrets:
+            sec = st.secrets
+
+            # Pattern 1: nested [admin] section → [admin]\nemail = "..."\npassword = "..."
+            if "admin" in sec and hasattr(sec["admin"], "get"):
+                admin_sec = sec["admin"]
+                email    = str(admin_sec.get("email",    "") or "").strip()
+                password = str(admin_sec.get("password", "") or "").strip()
+
+            # Pattern 2: flat ADMIN_EMAIL / ADMIN_PASSWORD keys
+            if not email:
+                email = str(sec.get("ADMIN_EMAIL", "") or "").strip()
+            if not password:
+                password = str(sec.get("ADMIN_PASSWORD", "") or "").strip()
+
+            # Pattern 3: bare `admin = "email@..."` + `password = "..."` at top level
+            if not email:
+                candidate = str(sec.get("admin", "") or "").strip()
+                # Only treat it as an email if it looks like one (contains @)
+                if "@" in candidate:
+                    email = candidate
+            if not password:
+                password = str(sec.get("password", "") or "").strip()
+
+    except Exception:
+        pass
+
+    # Fallback: OS environment / .env
+    if not email:
+        email = os.getenv("ADMIN_EMAIL", "").strip()
+    if not password:
+        password = os.getenv("ADMIN_PASSWORD", "").strip()
 
     if not email or not password:
         raise RuntimeError(
@@ -62,18 +86,18 @@ def _resolve_admin_credentials() -> tuple[str, str]:
             "┌─────────────────────────────────────────────────────┐\n"
             "│  ADMIN credentials are not configured.              │\n"
             "│                                                     │\n"
-            "│  Local dev — add to .env:                           │\n"
-            "│    ADMIN_EMAIL=admin@gujaratvidyapith.org           │\n"
-            "│    ADMIN_PASSWORD=YourStrongPassword@2025           │\n"
-            "│                                                     │\n"
-            "│  Streamlit Cloud — add to App Secrets:              │\n"
+            "│  In .streamlit/secrets.toml (recommended):          │\n"
             "│    [admin]                                          │\n"
             "│    email    = \"admin@gujaratvidyapith.org\"          │\n"
             "│    password = \"YourStrongPassword@2025\"             │\n"
+            "│                                                     │\n"
+            "│  OR as flat keys in secrets.toml / .env:            │\n"
+            "│    ADMIN_EMAIL=admin@gujaratvidyapith.org           │\n"
+            "│    ADMIN_PASSWORD=YourStrongPassword@2025           │\n"
             "└─────────────────────────────────────────────────────┘\n"
         )
 
-    return email.strip(), password.strip()
+    return email, password
 
 
 def seed() -> None:

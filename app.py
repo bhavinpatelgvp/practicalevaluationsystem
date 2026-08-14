@@ -44,19 +44,53 @@ run_migrations()
 # ── Auto-seed on cold start ───────────────────────────────────────────────────
 # Streamlit Community Cloud resets the filesystem on every redeploy, so the
 # SQLite database starts empty each time. We call seed() once when the DB has
-# no roles yet (fresh state). On all subsequent page loads the Role table is
-# non-empty so this block is a cheap no-op (one COUNT query).
+# no Administrator user yet (fresh state or failed previous seed).
+# On all subsequent page loads this is a cheap no-op (one COUNT query).
 def _bootstrap_db_if_empty() -> None:
     try:
         from sqlalchemy import text
         from seed import seed
         with SessionLocal() as _db:
-            role_count = _db.execute(text("SELECT COUNT(*) FROM roles")).scalar()
-            if role_count == 0:
-                logger.info("Empty database detected — running seed() to bootstrap.")
+            # Check for admin user specifically — roles may exist but admin creation
+            # could have failed in a previous run (e.g. credentials were missing)
+            admin_count = _db.execute(
+                text("SELECT COUNT(*) FROM users u JOIN roles r ON u.role_id = r.id WHERE r.name = 'Administrator'")
+            ).scalar()
+            if admin_count == 0:
+                logger.info("No Administrator user found — running seed() to bootstrap.")
                 seed()
+    except RuntimeError as _cred_err:
+        # Credentials not configured — show a clear setup guide in the UI and halt.
+        logger.error(f"Admin credentials not configured: {_cred_err}")
+        st.error("⚙️ **Setup required — Admin credentials not configured**")
+        st.markdown(
+            """
+The app needs an admin account but the **admin credentials are not set**.
+
+**Option A — In `.streamlit/secrets.toml`** (recommended for local):
+```toml
+[admin]
+email    = "admin@gujaratvidyapith.org"
+password = "YourStrongPassword@2025"
+```
+
+**Option B — Flat keys in `secrets.toml` or `.env`:**
+```
+ADMIN_EMAIL=admin@gujaratvidyapith.org
+ADMIN_PASSWORD=YourStrongPassword@2025
+```
+
+After setting credentials, **restart / reboot the app** and the admin account will be created automatically.
+            """
+        )
+        st.info(
+            "📄 See `.streamlit/secrets.toml.example` in the repo for the full template.",
+            icon="📄",
+        )
+        st.stop()
     except Exception as _e:
-        logger.warning(f"Auto-seed skipped: {_e}")
+        # Unexpected error — log it but let the app continue
+        logger.warning(f"Auto-seed skipped (unexpected error): {_e}")
 
 _bootstrap_db_if_empty()
 if "user_id" not in st.session_state:
@@ -121,6 +155,25 @@ with SessionLocal() as db:
                     st.session_state["google_pending_registration"] = google_info
                     st.query_params.clear()
                     st.rerun()
+                elif oauth_err == "FIRST_TIME_FACULTY_SETUP":
+                    # Non-student institutional email — auto-register as Faculty and log in
+                    from services.oauth_service import register_google_faculty
+                    faculty_user, reg_err = register_google_faculty(db, google_info)
+                    if faculty_user:
+                        logger.info("Google OAuth faculty auto-registered", extra={"user_id": faculty_user.id})
+                        st.session_state.user_id = faculty_user.id
+                        st.session_state.name = faculty_user.full_name
+                        st.session_state.role = faculty_user.role.name
+                        st.session_state.email = faculty_user.email
+                        st.session_state.department = getattr(faculty_user, "department", None)
+                        st.session_state.login_time = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+                        st.query_params.clear()
+                        st.query_params["session"] = create_session_token(faculty_user.id, faculty_user.role.name)
+                        st.rerun()
+                    else:
+                        st.session_state["google_auth_error"] = reg_err or "Faculty account creation failed."
+                        st.query_params.clear()
+                        st.rerun()
                 else:
                     st.session_state["google_auth_error"] = oauth_err
                     st.query_params.clear()
