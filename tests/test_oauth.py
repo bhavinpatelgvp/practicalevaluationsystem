@@ -148,7 +148,8 @@ def test_authenticate_google_user_unregistered_faculty_fails():
     }
     authenticated_user, err = authenticate_google_user(db, google_info)
     assert authenticated_user is None
-    assert "not registered" in err.lower()
+    # Non-student institutional email now triggers faculty auto-registration signal
+    assert err == "FIRST_TIME_FACULTY_SETUP"
 
 
 def test_authenticate_google_user_preregistered_student_success():
@@ -237,3 +238,61 @@ def test_exchange_code_for_user_info_mock():
         assert info is not None
         assert info["email"] == "test@gujaratvidyapith.org"
         assert info["name"] == "Test User"
+
+
+def test_register_google_faculty_creates_account():
+    """First-time faculty sign-in auto-creates a Faculty account."""
+    from services.oauth_service import register_google_faculty
+    db = setup_db()
+    ensure_role(db, "Faculty")  # make sure role exists
+
+    google_info = {
+        "email": "hasmukh.cs@gujaratvidyapith.org",
+        "name": "Hasmukh Patel",
+    }
+    user, err = register_google_faculty(db, google_info)
+    assert err is None
+    assert user is not None
+    assert user.email == "hasmukh.cs@gujaratvidyapith.org"
+    assert user.full_name == "Hasmukh Patel"
+    assert user.role.name == "Faculty"
+    assert user.is_active is True
+
+
+def test_register_google_faculty_idempotent():
+    """Calling register_google_faculty twice for the same email returns the same user."""
+    from services.oauth_service import register_google_faculty
+    db = setup_db()
+    ensure_role(db, "Faculty")
+
+    google_info = {"email": "bhavin.patel@gujaratvidyapith.org", "name": "Bhavin Patel"}
+    user1, err1 = register_google_faculty(db, google_info)
+    user2, err2 = register_google_faculty(db, google_info)
+    assert err1 is None and err2 is None
+    assert user1.id == user2.id
+
+
+def test_register_google_faculty_rejects_student_email():
+    """Student emails must not go through the faculty registration path."""
+    from services.oauth_service import register_google_faculty
+    db = setup_db()
+    ensure_role(db, "Faculty")
+
+    google_info = {"email": "250160450310.gvp@gujaratvidyapith.org", "name": "Student"}
+    user, err = register_google_faculty(db, google_info)
+    assert user is None
+    assert err is not None
+    assert "student" in err.lower()
+
+
+def test_authenticate_returns_faculty_setup_signal_for_non_student_institutional_email():
+    """authenticate_google_user returns FIRST_TIME_FACULTY_SETUP for any non-student GVP email."""
+    db = setup_db()
+    for email in [
+        "principal@gujaratvidyapith.org",
+        "lib.admin@gujaratvidyapith.org",
+        "coordinator.mca@gujaratvidyapith.org",
+    ]:
+        authenticated_user, err = authenticate_google_user(db, {"email": email})
+        assert authenticated_user is None, f"Should not return a user for {email}"
+        assert err == "FIRST_TIME_FACULTY_SETUP", f"Expected FIRST_TIME_FACULTY_SETUP for {email}, got: {err}"

@@ -119,12 +119,11 @@ def authenticate_google_user(db: Session, google_info: dict, ip: str | None = No
     if not user:
         enrollment_no = parse_student_enrollment_from_email(email)
         if enrollment_no or ".gvp@" in email.lower():
-            # Flag for first-time student onboarding (Department/Programme/Semester selection)
+            # Student email detected — trigger first-time student onboarding
             return None, "FIRST_TIME_STUDENT_SETUP"
-        return None, (
-            "Your Google account is not registered in this system. "
-            "Please contact your administrator to add your account before signing in."
-        )
+        # Non-student institutional domain email → auto-register as Faculty
+        # (e.g. hasmukh.cs@gujaratvidyapith.org, bhavin.patel@gujaratvidyapith.org)
+        return None, "FIRST_TIME_FACULTY_SETUP"
 
     if not user.is_active:
         record_login(db, user, email, user.role.name if user.role else None, "failed:account-inactive", ip)
@@ -226,5 +225,56 @@ def register_google_student(
     user.last_login = utc_now()
     db.add(user)
     record_login(db, user, user.username, "Student", "success:google-oauth-onboarding", ip)
+    db.commit()
+    return user, None
+
+
+def register_google_faculty(
+    db: Session,
+    google_info: dict,
+    ip: str | None = None,
+) -> tuple[User | None, str | None]:
+    """Auto-create a Faculty account on first Google sign-in with a non-student institutional email.
+
+    The account is created immediately — no manual admin step required.
+    Faculty still need subjects assigned by the admin before they can manage practicals.
+    """
+    email = (google_info.get("email") or "").strip()
+    if not email:
+        return None, "Google account does not provide an email address."
+
+    # Safety guard: this function must never be called for student emails
+    if parse_student_enrollment_from_email(email) or ".gvp@" in email.lower():
+        return None, "Student emails must go through the student onboarding flow."
+
+    # Check if user already exists (should not happen, but be safe)
+    existing = db.scalar(select(User).where(func.lower(User.email) == email.lower()))
+    if existing:
+        # Already exists — just log them in
+        reset_failed_attempts(db, existing)
+        existing.last_login = utc_now()
+        db.add(existing)
+        record_login(db, existing, existing.username, existing.role.name if existing.role else None, "success:google-oauth", ip)
+        db.commit()
+        return existing, None
+
+    faculty_role = ensure_role(db, "Faculty")
+    google_name = (google_info.get("name") or email.split("@")[0]).strip()
+
+    user = User(
+        username=email,
+        full_name=google_name,
+        email=email.lower(),
+        password_hash=hash_password(secrets.token_urlsafe(16)),
+        role_id=faculty_role.id,
+        is_active=True,
+    )
+    db.add(user)
+    db.flush()
+
+    reset_failed_attempts(db, user)
+    user.last_login = utc_now()
+    db.add(user)
+    record_login(db, user, user.username, "Faculty", "success:google-oauth-faculty-auto-register", ip)
     db.commit()
     return user, None
