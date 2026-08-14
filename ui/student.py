@@ -1,4 +1,3 @@
-"""Student dashboard — practicals grouped by subject for easy navigation."""
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -6,7 +5,7 @@ import streamlit as st
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
-from models.schema import Assignment, Student, Subject
+from models.schema import Assignment, Practical, Student, Subject, Submission
 from services.core_services import _github_url_type, save_submission
 
 
@@ -144,8 +143,8 @@ def student_page(db, student: Student) -> None:
         select(Assignment)
         .where(Assignment.student_id == student.id)
         .options(
-            joinedload(Assignment.practical).joinedload("subject"),
-            joinedload(Assignment.submission).joinedload("evaluation"),
+            joinedload(Assignment.practical).joinedload(Practical.subject),
+            joinedload(Assignment.submission).joinedload(Submission.evaluation),
         )
         .order_by(Assignment.deadline)
     ).unique().all()
