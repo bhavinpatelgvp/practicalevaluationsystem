@@ -62,7 +62,10 @@ db.sqlite3
 db.sqlite3-journal
 
 # SQLite databases — never commit DB files to version control
-# *.db
+*.db
+# Exception: allow the bootstrapped app database to be committed
+# (contains only roles, permissions, and admin account — no student/faculty data)
+!tpems.db
 *.sqlite3
 
 # Flask stuff:
