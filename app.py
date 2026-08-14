@@ -40,6 +40,25 @@ def render_footer() -> None:
 
 
 run_migrations()
+
+# ── Auto-seed on cold start ───────────────────────────────────────────────────
+# Streamlit Community Cloud resets the filesystem on every redeploy, so the
+# SQLite database starts empty each time. We call seed() once when the DB has
+# no roles yet (fresh state). On all subsequent page loads the Role table is
+# non-empty so this block is a cheap no-op (one COUNT query).
+def _bootstrap_db_if_empty() -> None:
+    try:
+        from sqlalchemy import text
+        from seed import seed
+        with SessionLocal() as _db:
+            role_count = _db.execute(text("SELECT COUNT(*) FROM roles")).scalar()
+            if role_count == 0:
+                logger.info("Empty database detected — running seed() to bootstrap.")
+                seed()
+    except Exception as _e:
+        logger.warning(f"Auto-seed skipped: {_e}")
+
+_bootstrap_db_if_empty()
 if "user_id" not in st.session_state:
 
     st.session_state.user_id = None

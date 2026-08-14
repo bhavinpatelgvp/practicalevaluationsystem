@@ -29,7 +29,31 @@ from models.schema import (
     User,
 )
 
-GITHUB_RE = re.compile(r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/?$")
+# Accepts:
+#   Repo root:  https://github.com/<user>/<repo>
+#   File blob:  https://github.com/<user>/<repo>/blob/<branch>/<path/to/file.ext>
+#   Raw file:   https://raw.githubusercontent.com/<user>/<repo>/<branch>/<path/to/file.ext>
+GITHUB_REPO_RE = re.compile(
+    r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/?$"
+)
+GITHUB_FILE_RE = re.compile(
+    r"^https://(?:github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/blob/"
+    r"|raw\.githubusercontent\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/)"
+    r".+\.[A-Za-z0-9]+$"
+)
+
+def _is_valid_github_url(url: str) -> bool:
+    """Return True when *url* is a GitHub repo root OR a direct file link."""
+    u = url.strip()
+    return bool(GITHUB_REPO_RE.match(u) or GITHUB_FILE_RE.match(u))
+
+
+def _github_url_type(url: str) -> str:
+    """Return 'file' if the URL points to a specific file, otherwise 'repo'."""
+    u = url.strip()
+    return "file" if GITHUB_FILE_RE.match(u) else "repo"
+
+
 GVP_STUDENT_EMAIL_RE = re.compile(r"^(\d{9}|\d{12})\.gvp@gujaratvidyapith\.org$", re.IGNORECASE)
 ENROLLMENT_NO_RE = re.compile(r"^(\d{9}|\d{12})$")
 VALID_GRADES = {"A", "B", "C", "D", "E", "F"}
@@ -63,8 +87,21 @@ def assign_practical(db: Session, practical: Practical, actor_id: int, student_i
 
 
 def save_submission(db: Session, assignment_id: int, github_url: str, actor_id: int, **fields) -> Submission:
-    if not GITHUB_RE.match(github_url.strip()):
-        raise ValueError("Enter a valid public GitHub repository URL.")
+    """Persist a practical submission.
+
+    *github_url* may be:
+    - A GitHub repository root URL  (https://github.com/<user>/<repo>)
+    - A GitHub file blob URL        (https://github.com/<user>/<repo>/blob/<branch>/<file.ext>)
+    - A raw GitHub file URL         (https://raw.githubusercontent.com/...)
+
+    commit_hash is no longer required; it is silently ignored if passed in *fields*.
+    """
+    fields.pop("commit_hash", None)  # kept in DB schema for backward-compat; not required
+    if not _is_valid_github_url(github_url):
+        raise ValueError(
+            "Enter a valid GitHub URL (repository root or a direct file link like "
+            "https://github.com/user/repo/blob/main/Solution.java)."
+        )
     assignment = db.scalar(select(Assignment).options(joinedload(Assignment.submission)).where(Assignment.id == assignment_id))
     if not assignment:
         raise ValueError("Assignment not found.")
@@ -79,7 +116,8 @@ def save_submission(db: Session, assignment_id: int, github_url: str, actor_id: 
         for key, value in fields.items():
             setattr(submission, key, value)
     assignment.status = "Late" if submission.is_late else "Submitted"
-    audit(db, actor_id, "SUBMIT_REPOSITORY", "Assignment", assignment.id, submission.github_url)
+    url_type = _github_url_type(github_url)
+    audit(db, actor_id, "SUBMIT_REPOSITORY", "Assignment", assignment.id, f"[{url_type}] {submission.github_url}")
     db.commit()
     db.refresh(submission)
     return submission

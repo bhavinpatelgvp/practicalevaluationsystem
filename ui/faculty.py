@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from sqlalchemy import select
 from models.schema import Assignment, FacultySubject, Practical, Program, Student, Submission, Subject
 from services.core_services import (
+    _github_url_type,
     assign_practical,
     build_practical_import_template,
     create_practical,
@@ -343,7 +344,9 @@ def _evaluation_ui(db, user_id: int, subject_labels: dict[int, str]) -> None:
     }
     selected = st.selectbox("Submission to evaluate", list(submission_choices), format_func=lambda value: submission_choices[value], key="evaluate_submission_select")
     submission = db.get(Submission, selected)
-    st.caption(f"Repository: {submission.github_url}")
+    _url_type = _github_url_type(submission.github_url)
+    _btn_label = "📄 Open submitted file" if _url_type == "file" else "📂 Open GitHub repository"
+    st.link_button(_btn_label, submission.github_url)
     with st.form("evaluation_form"):
         grade = st.selectbox("Grade", VALID_GRADES)
         remarks = st.text_area("Remarks")

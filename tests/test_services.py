@@ -81,10 +81,52 @@ def test_assign_submit_and_grade():
     assert len(pdf_report(db).getvalue()) > 0
 
 
+def test_github_file_url_accepted():
+    """Students can submit a direct file link (blob or raw) instead of a repo root."""
+    db = setup_db()
+    world = seed_world(db)
+    practical = Practical(subject=world["subject"], practical_number=2, title="File Submit", created_by=world["faculty"].id, submission_days=7)
+    db.add(practical); db.commit()
+    assign_practical(db, practical, world["faculty"].id)
+    assignment = db.scalar(select(Assignment).where(Assignment.student_id == world["student"].id, Assignment.practical_id == practical.id))
+
+    # GitHub blob URL with .java extension
+    blob_url = "https://github.com/student123/java-labs/blob/main/Practical1/Solution.java"
+    sub = save_submission(db, assignment.id, blob_url, world["student"].user_id)
+    assert sub.github_url == blob_url
+
+    # Updating to a raw GitHub URL with .py extension
+    raw_url = "https://raw.githubusercontent.com/student123/python-labs/main/lab1.py"
+    sub2 = save_submission(db, assignment.id, raw_url, world["student"].user_id)
+    assert sub2.github_url == raw_url
+
+
+def test_commit_hash_kwarg_is_silently_ignored():
+    """Passing commit_hash= should not raise; it's accepted but dropped."""
+    db = setup_db()
+    world = seed_world(db)
+    practical = Practical(subject=world["subject"], practical_number=3, title="Commit Test", created_by=world["faculty"].id, submission_days=7)
+    db.add(practical); db.commit()
+    assign_practical(db, practical, world["faculty"].id)
+    assignment = db.scalar(select(Assignment).where(Assignment.student_id == world["student"].id, Assignment.practical_id == practical.id))
+    sub = save_submission(
+        db, assignment.id, "https://github.com/example/repo",
+        world["student"].user_id, commit_hash="abc1234",
+    )
+    assert sub is not None
+
+
 def test_invalid_repository_url_is_rejected():
     db = setup_db()
-    with pytest.raises(ValueError, match="valid public GitHub"):
+    with pytest.raises(ValueError, match="valid GitHub URL"):
         save_submission(db, 999, "https://example.com/not-github", 1)
+
+
+def test_partial_github_url_is_rejected():
+    """A URL that looks like GitHub but isn't a valid repo or file path is rejected."""
+    db = setup_db()
+    with pytest.raises(ValueError, match="valid GitHub URL"):
+        save_submission(db, 999, "https://github.com/", 1)
 
 
 def test_invalid_grade_is_rejected():
@@ -230,10 +272,12 @@ def test_validate_bulk_user_import_marks_missing_and_duplicate_rows():
 
     rows = pd.DataFrame(
         [
-            {"Enrollment No.": "250160450001", "Student Name": "Alice", "Email": "250160450001.gvp@gujaratvidyapith.org", "Programme": "MCA", "Semester": 3},
+            {"Enrollment No.": "250160450001", "Student Name": "Alice 12-digit", "Email": "250160450001.gvp@gujaratvidyapith.org", "Programme": "MCA", "Semester": 3},
+            {"Enrollment No.": "210160450", "Student Name": "Dave 9-digit", "Email": "210160450.gvp@gujaratvidyapith.org", "Programme": "MCA", "Semester": 3},
             {"Enrollment No.": "", "Student Name": "Bob", "Email": "250160450002.gvp@gujaratvidyapith.org", "Programme": "MCA", "Semester": 3},
             {"Enrollment No.": "250160450001", "Student Name": "Alice 2", "Email": "250160450001.gvp@gujaratvidyapith.org", "Programme": "MCA", "Semester": 3},
             {"Enrollment No.": "12345", "Student Name": "Short", "Email": "12345.gvp@gujaratvidyapith.org", "Programme": "MCA", "Semester": 3},
+            {"Enrollment No.": "1234567890", "Student Name": "TenDigits", "Email": "1234567890.gvp@gujaratvidyapith.org", "Programme": "MCA", "Semester": 3},
             {"Enrollment No.": "250160450003", "Student Name": "Charlie", "Email": "charlie@gmail.com", "Programme": "MCA", "Semester": 3},
         ]
     )
@@ -241,13 +285,16 @@ def test_validate_bulk_user_import_marks_missing_and_duplicate_rows():
     preview = validate_bulk_user_import(rows, "student", db)
 
     assert preview[0]["ready"] is True
-    assert preview[1]["ready"] is False
-    assert "required" in preview[1]["reason"].lower()
-    assert preview[2]["duplicate"] is True
-    assert preview[3]["ready"] is False
-    assert "12 digits" in preview[3]["reason"]
+    assert preview[1]["ready"] is True
+    assert preview[2]["ready"] is False
+    assert "required" in preview[2]["reason"].lower()
+    assert preview[3]["duplicate"] is True
     assert preview[4]["ready"] is False
-    assert "gujaratvidyapith.org" in preview[4]["reason"]
+    assert "9 or 12 digits" in preview[4]["reason"]
+    assert preview[5]["ready"] is False
+    assert "9 or 12 digits" in preview[5]["reason"]
+    assert preview[6]["ready"] is False
+    assert "gujaratvidyapith.org" in preview[6]["reason"]
 
 
 def test_build_practical_import_template_returns_bytes():
