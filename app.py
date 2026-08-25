@@ -1,14 +1,14 @@
 from datetime import datetime, timezone
 import streamlit as st
 from core.database import SessionLocal, init_db, run_migrations
-from ui.auth import render_login, handle_reset
+from ui.auth import render_login
 from models.schema import User
 from ui.admin import administrator_page
 from ui.faculty import faculty_page
 from ui.dashboard import dashboard, student_dashboard
 from ui.student import student_page
 from core.config import settings
-from core.session_manager import verify_session_token,create_session_token
+from core.session_manager import verify_session_token, create_session_token
 from core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -25,74 +25,29 @@ def render_brand_header() -> None:
   return None
 
 
-def render_footer() -> None:
-    st.markdown(
-        """
-        <div class="page-footer">
-            🎓&nbsp; <strong>Gujarat Vidyapith</strong>
-            &nbsp;·&nbsp; Developed by Department of Computer Science
-            &nbsp;&nbsp;|&nbsp;&nbsp;
-            &copy; 2026 Gujarat Vidyapith &nbsp;·&nbsp; Practical Evaluation &amp; Management System
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+
 
 
 run_migrations()
 
 # ── Auto-seed on cold start ───────────────────────────────────────────────────
-# Streamlit Community Cloud resets the filesystem on every redeploy, so the
-# SQLite database starts empty each time. We call seed() once when the DB has
-# no Administrator user yet (fresh state or failed previous seed).
-# On all subsequent page loads this is a cheap no-op (one COUNT query).
+# Bootstraps roles, permissions, and academic master data on cold start if empty.
 def _bootstrap_db_if_empty() -> None:
     try:
         from sqlalchemy import text
         from seed import seed
         with SessionLocal() as _db:
-            # Check for admin user specifically — roles may exist but admin creation
-            # could have failed in a previous run (e.g. credentials were missing)
-            admin_count = _db.execute(
-                text("SELECT COUNT(*) FROM users u JOIN roles r ON u.role_id = r.id WHERE r.name = 'Administrator'")
-            ).scalar()
-            if admin_count == 0:
-                logger.info("No Administrator user found — running seed() to bootstrap.")
+            role_count = _db.execute(text("SELECT COUNT(*) FROM roles")).scalar()
+            perm_count = _db.execute(text("SELECT COUNT(*) FROM permissions")).scalar()
+            if role_count == 0 or perm_count == 0:
+                logger.info("Roles or permissions unpopulated — running seed() to bootstrap initial data.")
                 seed()
-    except RuntimeError as _cred_err:
-        # Credentials not configured — show a clear setup guide in the UI and halt.
-        logger.error(f"Admin credentials not configured: {_cred_err}")
-        st.error("⚙️ **Setup required — Admin credentials not configured**")
-        st.markdown(
-            """
-The app needs an admin account but the **admin credentials are not set**.
-
-**Option A — In `.streamlit/secrets.toml`** (recommended for local):
-```toml
-[admin]
-email    = "admin@gujaratvidyapith.org"
-password = "YourStrongPassword@2025"
-```
-
-**Option B — Flat keys in `secrets.toml` or `.env`:**
-```
-ADMIN_EMAIL=admin@gujaratvidyapith.org
-ADMIN_PASSWORD=YourStrongPassword@2025
-```
-
-After setting credentials, **restart / reboot the app** and the admin account will be created automatically.
-            """
-        )
-        st.info(
-            "📄 See `.streamlit/secrets.toml.example` in the repo for the full template.",
-            icon="📄",
-        )
-        st.stop()
     except Exception as _e:
-        # Unexpected error — log it but let the app continue
-        logger.warning(f"Auto-seed skipped (unexpected error): {_e}")
+        logger.warning(f"Auto-seed skipped: {_e}")
+
 
 _bootstrap_db_if_empty()
+
 if "user_id" not in st.session_state:
 
     st.session_state.user_id = None
@@ -125,8 +80,9 @@ with SessionLocal() as db:
             else:
                 st.query_params.clear()
 
-    # Handle Google OAuth callback if code or error is present in query parameters
-    if not st.session_state.get("user_id"):
+    # Handle Google OAuth callback — only active when enable_google_login is True.
+    # When running on a private/local IP this entire block is skipped.
+    if settings.enable_google_login and not st.session_state.get("user_id"):
         oauth_error_param = st.query_params.get("error")
         if oauth_error_param:
             err_desc = st.query_params.get("error_description") or oauth_error_param
@@ -183,20 +139,19 @@ with SessionLocal() as db:
                 st.query_params.clear()
                 st.rerun()
 
+
     if not st.session_state.get("user_id"):
-        if "google_pending_registration" in st.session_state:
+        # Google OAuth first-time student onboarding (only active when Google login is enabled)
+        if settings.enable_google_login and "google_pending_registration" in st.session_state:
             from ui.auth import render_student_onboarding
             render_student_onboarding(db, st.session_state["google_pending_registration"])
+        # Student self-registration page
+        elif st.session_state.get("show_register"):
+            from ui.auth import render_student_register
+            render_student_register(db)
         else:
-            # handle password reset token in query params
-            def _get_query_params():
-                return st.query_params
+            render_login()
 
-            params = _get_query_params()
-            if "reset" in params:
-                handle_reset(params.get("reset"))
-            else:
-                render_login()
     else:
         login_time_str = st.session_state.get("login_time")
         if login_time_str:
@@ -288,4 +243,3 @@ with SessionLocal() as db:
             unsafe_allow_html=True,
           )
 
-        render_footer()

@@ -1,25 +1,10 @@
-import streamlit as st
-from core.database import SessionLocal
-from services.auth_service import authenticate, create_password_reset, verify_password_reset, mark_password_reset_used, hash_password
-from core.rbac import has_permission
-from services.email_service import send_html_email
-from core.session_manager import create_session_token
-from sqlalchemy import select
-from models.schema import User
-from datetime import datetime, timezone
+import base64
+import os
 import re
-
-ROLE_OPTIONS = ["Administrator", "Faculty", "Student", "External Examiner", "Coordinator"]
-
-
-def _trim(val: str) -> str:
-    return val.strip() if isinstance(val, str) else val
-
-
-def _is_valid_email(value: str) -> bool:
-    if not value:
-        return False
-    return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value) is not None
+from datetime import datetime, timezone
+import streamlit as st
+from sqlalchemy import select
+from core.session_manager import create_session_token
 
 
 def _rerun() -> None:
@@ -32,158 +17,343 @@ def _rerun() -> None:
             pass
 
 
-def render_login() -> None:
-    # Layout: left branding, right auth form
-    left, right = st.columns([1.2, 1])
-    with left:
-        st.markdown("&nbsp;")
-        st.image("assets/gujarat-vidyapith-logo.png", width=120)
-        st.markdown("### Department of Computer Science")
-        st.markdown("#### Practical Evaluation Management System")
-        #st.write("- Transparent Evaluation\n- Digital Practical Submission\n- Grade Analytics\n- Faculty Dashboard\n- Student Progress Tracking")
-    with right:
-        #st.markdown("<div class='login-card'>", unsafe_allow_html=True)
-        st.markdown("&nbsp;")
-        st.markdown("### Sign in")
+@st.cache_data
+def _get_logo_base64() -> str:
+    logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "gujarat-vidyapith-logo.png")
+    if os.path.exists(logo_path):
+        try:
+            with open(logo_path, "rb") as f:
+                return base64.b64encode(f.read()).decode("utf-8")
+        except Exception:
+            return ""
+    return ""
 
+
+def _logo_html(width: str = "120px") -> str:
+    logo_b64 = _get_logo_base64()
+    if not logo_b64:
+        return ""
+    return (
+        f'<img src="data:image/png;base64,{logo_b64}" alt="Gujarat Vidyapith" '
+        f'style="width:{width}; max-width:45vw; height:auto; margin:0 auto; display:block;" />'
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Login page
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_login() -> None:
+    """Render the sign-in page.
+
+    Shows a username/password form as the primary auth method.
+    Google Sign-In is shown only when settings.enable_google_login is True
+    AND Google OAuth credentials are configured (for future use / public deployments).
+    """
+    from core.config import settings
+    from services.auth_service import authenticate
+    from core.session_manager import create_session_token
+
+    col_left, col_center, col_right = st.columns([1, 2.2, 1])
+    with col_center:
+        # ── Header ────────────────────────────────────────────────────────────
+        st.markdown(
+            f"""
+            <div style='text-align:center; margin-bottom:1.25rem;'>
+                <div style='display:flex; justify-content:center; align-items:center; margin-bottom:0.85rem;'>
+                    {_logo_html("140px")}
+                </div>
+                <div style='font-size:1.6rem; font-weight:700; color:var(--ink); line-height:1.25; margin-bottom:0.25rem;'>
+                    Gujarat Vidyapith
+                </div>
+                <div style='font-size:0.95rem; color:var(--muted); font-weight:500; margin-bottom:0.35rem;'>
+                    Department of Computer Science
+                </div>
+                <div style='font-size:1.05rem; font-weight:600; color:var(--accent-strong); line-height:1.35;'>
+                    Transparent Practical Evaluation &amp; Management System
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # ── Error messages ────────────────────────────────────────────────────
         if "google_auth_error" in st.session_state:
             st.error(st.session_state.pop("google_auth_error"))
+        if "login_error" in st.session_state:
+            st.error(st.session_state.pop("login_error"))
 
-        # Google Sign-In
-        from services.oauth_service import is_google_auth_configured, get_google_auth_url
+        # ── Username / Password form ──────────────────────────────────────────
+        with st.form("login_form", clear_on_submit=False):
+            username = st.text_input(
+                "Email or Enrollment Number",
+                placeholder="e.g. 202301234 or faculty@gujaratvidyapith.org",
+                key="login_username_input",
+            )
+            password = st.text_input(
+                "Password",
+                type="password",
+                placeholder="Enter your password",
+                key="login_password_input",
+            )
+            submitted = st.form_submit_button("Sign In", type="primary", width="stretch")
 
-        if is_google_auth_configured():
-            google_url = get_google_auth_url()
-            st.link_button(
-                "🌐 Sign in with Google",
-                google_url,
-                type="secondary",
-                use_container_width=True,
-                help="Sign in with your institutional Google Workspace account",
-            )
-            st.markdown(
-                "<div style='text-align: center; margin: 10px 0 14px 0; color: #888; font-size: 0.85rem;'>— OR SIGN IN WITH USERNAME & PASSWORD —</div>",
-                unsafe_allow_html=True,
-            )
-        else:
-            with st.expander("🌐 Sign in with Google (Configuration)", expanded=False):
-                st.caption(
-                    "Google OAuth is supported. To activate the **Sign in with Google** button, configure these environment variables:\n\n"
-                    "- `GOOGLE_CLIENT_ID`\n"
-                    "- `GOOGLE_CLIENT_SECRET`\n"
-                    "- `GOOGLE_REDIRECT_URI` *(default: `http://localhost:8501`)*\n"
-                    "- `GOOGLE_HOSTED_DOMAIN` *(optional, e.g. `gujaratvidyapith.org`)*"
+        if submitted:
+            if not username.strip() or not password:
+                st.error("Please enter both your username/email and password.")
+            else:
+                from core.database import SessionLocal
+                # Read all lazy-loaded relationship fields INSIDE the session so
+                # they don't trigger a DetachedInstanceError after the context closes.
+                _auth_result = None
+                with SessionLocal() as _db:
+                    user = authenticate(_db, username.strip(), password)
+                    if user is not None:
+                        _auth_result = {
+                            "id":    user.id,
+                            "name":  user.full_name,
+                            "role":  user.role.name,
+                            "email": user.email,
+                        }
+
+                if _auth_result is None:
+                    st.error(
+                        "Invalid credentials or your account has been locked. "
+                        "Please check your username/password and try again."
+                    )
+                else:
+                    st.session_state.user_id = _auth_result["id"]
+                    st.session_state.name = _auth_result["name"]
+                    st.session_state.role = _auth_result["role"]
+                    st.session_state.email = _auth_result["email"]
+                    st.session_state.department = None
+                    st.session_state.login_time = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+                    st.query_params["session"] = create_session_token(_auth_result["id"], _auth_result["role"])
+                    st.rerun()
+
+        # ── Register link (students only) ─────────────────────────────────────
+        st.markdown(
+            "<div style='text-align:center; margin-top:0.6rem; font-size:0.88rem;'>"
+            "New student? "
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("Register here →", key="go_to_register_btn"):
+            st.session_state["show_register"] = True
+            st.rerun()
+
+        # ── Google Sign-In (hidden on private/local deployments) ──────────────
+        # This block is preserved so it can be re-enabled by setting
+        # ENABLE_GOOGLE_LOGIN=true in .env or secrets.toml once you have a
+        # public redirect URI registered with Google.
+        if settings.enable_google_login:
+            from services.oauth_service import is_google_auth_configured, get_google_auth_url
+            if is_google_auth_configured():
+                st.markdown(
+                    "<div style='text-align:center; margin:0.75rem 0; color:var(--muted); font-size:0.82rem;'>── or ──</div>",
+                    unsafe_allow_html=True,
+                )
+                google_url = get_google_auth_url()
+                st.link_button(
+                    "🌐 Sign in with Google",
+                    google_url,
+                    type="secondary",
+                    width="stretch",
+                    help="Sign in with your @gujaratvidyapith.org institutional Google account",
+                )
+                st.markdown(
+                    """
+                    <div style='text-align:center; margin-top:0.6rem; font-size:0.78rem; color:var(--muted);'>
+                        Use your official <code>@gujaratvidyapith.org</code> account
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
                 )
 
-        with st.form("loginform"):
-            username = _trim(st.text_input("Email", placeholder="e.g. name@gujaratvidyapith.org"))
-            password = st.text_input("Password", type="password")
-            default_role_idx = ROLE_OPTIONS.index("Student") if "Student" in ROLE_OPTIONS else 0
-            role = st.selectbox("Role", options=ROLE_OPTIONS, index=default_role_idx)
-            remember = st.checkbox("Remember me")
-            cols = st.columns([3, 1])
-            with cols[0]:
-                submitted = st.form_submit_button("Sign in")
-            with cols[1]:
-                st.markdown("&nbsp;")
-            if submitted:
-                # validations
-                if not username:
-                    st.error("Email is required.")
-                elif not password:
-                    st.error("Password is required.")
-                else:
-                    with SessionLocal() as db:
-                        user = authenticate(db, username, password, role_name=role)
-                        if not user:
-                            st.error("Invalid credentials.")
-                        else:
-                            # check permission for selected role
-                            if role != "Administrator" and not has_permission(db, user, f"{role.lower()}.access"):
-                                st.error("You are not permitted to sign in for the selected role.")
-                                return
-                            st.success("Login Successful. Redirecting to your dashboard...")
-                            st.session_state.user_id = user.id
-                            st.session_state.name = user.full_name
-                            st.session_state.role = user.role.name
-                            st.session_state.email = user.email
-                            st.session_state.department = getattr(user, 'department', None)
-                            st.session_state.login_time = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
-                            st.query_params["session"] = create_session_token(user.id, user.role.name)
 
-                            _rerun()
-        #st.markdown("</div>", unsafe_allow_html=True)
+# ─────────────────────────────────────────────────────────────────────────────
+# Student self-registration page
+# ─────────────────────────────────────────────────────────────────────────────
 
-        # Help button outside the form (forms do not allow st.button)
-        #if st.button("Help"):
-            #st.info("For assistance, contact the system administrator or consult the user manual.")
+def render_student_register(db) -> None:
+    """Render the student self-registration form.
 
-        #st.markdown("---")
-        # Forgot password
-        if st.checkbox("Forgot password?"):
-            with st.form("forgot"):
-                identifier = _trim(st.text_input("Username or Email"))
-                if st.form_submit_button("Send reset link"):
-                    if not identifier:
-                        st.error("Please provide username or email.")
-                    else:
-                        with SessionLocal() as db:
-                            user = db.scalar(select(User).where((User.username == identifier) | (User.email == identifier)))
-                            if not user:
-                                st.info("If the account exists, a reset link has been sent.")
-                            else:
-                                pr, raw_token = create_password_reset(db, user)
-                                db.commit()
-                                # use a relative reset link query parameter; Streamlit URL building differs by deployment
-                                reset_url = f"?reset={raw_token}"
+    Students supply their GVP institutional email (enrollment no. is auto-extracted),
+    choose their department/programme/semester, and create a password.
+    Mirrors the Google onboarding flow for students who use local auth.
+    """
+    from sqlalchemy import select
+    from models.schema import Department, Program
+    from services.registration_service import parse_enrollment_from_email, validate_student_email
 
-                                html = f"<p>Click the link to reset your password (valid for 30 minutes): <a href='{reset_url}'>Reset password</a></p>"
-                                try:
-                                    send_html_email(user.email, "Password reset for TPEMS", html)
-                                    st.success("If the account exists, a reset link has been sent.")
-                                except Exception:
-                                    st.error("Failed to send email — check SMTP settings.")
+    col_left, col_center, col_right = st.columns([1, 2.2, 1])
+    with col_center:
+        # ── Header ────────────────────────────────────────────────────────────
+        logo_html = _logo_html("100px")
+        if logo_html:
+            st.markdown(
+                f"<div style='display:flex; justify-content:center; margin-bottom:0.5rem;'>{logo_html}</div>",
+                unsafe_allow_html=True,
+            )
+        st.markdown(
+            "<div style='text-align:center; margin-bottom:1rem;'>"
+            "<h2 style='margin-top:0;'>🎓 New Student Registration</h2>"
+            "<div style='font-size:0.9rem; color:var(--muted);'>"
+            "Create your account using your Gujarat Vidyapith institutional email."
+            "</div></div>",
+            unsafe_allow_html=True,
+        )
 
+        # ── Live email preview for enrollment extraction ───────────────────────
+        email_key = "reg_email_input"
+        email_val = st.session_state.get(email_key, "")
+        enrollment_preview = parse_enrollment_from_email(email_val) if email_val else None
 
-def handle_reset(token: str) -> None:
-    with SessionLocal() as db:
-        user = verify_password_reset(db, token)
-        if not user:
-            st.error("Invalid or expired token.")
+        # ── Load departments ──────────────────────────────────────────────────
+        departments = list(db.scalars(select(Department).order_by(Department.name)))
+        if not departments:
+            st.error("No departments have been configured yet. Please contact your administrator.")
+            if st.button("Back to Login", key="reg_back_no_dept"):
+                st.session_state.pop("show_register", None)
+                st.rerun()
             return
-        with st.form("resetform"):
-            pwd = st.text_input("New password", type="password")
-            pwd2 = st.text_input("Confirm password", type="password")
-            if st.form_submit_button("Reset password"):
-                if not pwd or not pwd2:
-                    st.error("Password fields are required.")
-                elif pwd != pwd2:
-                    st.error("Passwords do not match.")
-                else:
-                    # basic policy
-                    if len(pwd) < 8 or not re.search(r"[A-Z]", pwd) or not re.search(r"[a-z]", pwd) or not re.search(r"\d", pwd) or not re.search(r"[^A-Za-z0-9]", pwd):
-                        st.error("Password does not meet policy requirements.")
-                        return
-                    user.password_hash = hash_password(pwd)
-                    db.add(user)
-                    mark_password_reset_used(db, token)
-                    db.commit()
-                    st.success("Password updated. Please sign in with your new password.")
 
+        dept_labels = {d.id: f"{d.code} · {d.name}" for d in departments}
+
+        # ── Form ─────────────────────────────────────────────────────────────
+        with st.form("student_register_form", clear_on_submit=False):
+            email = st.text_input(
+                "Institutional Email",
+                placeholder="e.g. 202301234@gujaratvidyapith.org",
+                key=email_key,
+                help="Your Gujarat Vidyapith email must start with your 9 or 12-digit enrollment number.",
+            )
+
+            # Enrollment preview (computed from email, shown read-only)
+            live_enrollment = parse_enrollment_from_email(email) if email else None
+            if live_enrollment:
+                st.text_input("Enrollment Number (auto-detected)", value=live_enrollment, disabled=True)
+            elif email:
+                st.caption("⚠️ Enter a valid GVP student email to auto-detect your enrollment number.")
+
+            full_name = st.text_input("Full Name", placeholder="e.g. Rahul Patel")
+
+            # Department → Programme cascade
+            selected_dept_id = st.selectbox(
+                "Department",
+                list(dept_labels.keys()),
+                format_func=lambda x: dept_labels[x],
+                key="reg_dept_select",
+            )
+
+            programs = list(
+                db.scalars(
+                    select(Program)
+                    .where(Program.department_id == selected_dept_id)
+                    .order_by(Program.code)
+                )
+            )
+            if not programs:
+                programs = list(db.scalars(select(Program).order_by(Program.code)))
+
+            if not programs:
+                st.error("No programmes configured. Please contact your administrator.")
+                st.form_submit_button("Create Account", disabled=True)
+                return
+
+            prog_labels = {p.id: f"{p.code} · {p.name}" for p in programs}
+            selected_prog_id = st.selectbox(
+                "Programme",
+                list(prog_labels.keys()),
+                format_func=lambda x: prog_labels[x],
+                key="reg_prog_select",
+            )
+
+            sel_prog = db.get(Program, selected_prog_id)
+            max_semesters = sel_prog.total_semesters if sel_prog else 8
+
+            semester = st.selectbox(
+                "Current Semester",
+                options=list(range(1, max_semesters + 1)),
+                format_func=lambda s: f"Semester {s}",
+                key="reg_semester_select",
+            )
+
+            password = st.text_input(
+                "Password",
+                type="password",
+                placeholder="Minimum 6 characters",
+                key="reg_password_input",
+            )
+            confirm_password = st.text_input(
+                "Confirm Password",
+                type="password",
+                placeholder="Re-enter password",
+                key="reg_confirm_input",
+            )
+
+            col_submit, col_back = st.columns([2, 1])
+            with col_submit:
+                submitted = st.form_submit_button("Create Account", type="primary", width="stretch")
+            with col_back:
+                back = st.form_submit_button("Back to Login", width="stretch")
+
+        if back:
+            st.session_state.pop("show_register", None)
+            st.rerun()
+
+        if submitted:
+            from services.registration_service import register_student
+            user, err = register_student(
+                db=db,
+                email=email.strip(),
+                password=password,
+                confirm_password=confirm_password,
+                full_name=full_name.strip(),
+                program_id=selected_prog_id,
+                semester=int(semester),
+            )
+            if err:
+                st.error(err)
+            else:
+                # Auto-login on successful registration
+                st.session_state.pop("show_register", None)
+                st.session_state.user_id = user.id
+                st.session_state.name = user.full_name
+                st.session_state.role = user.role.name
+                st.session_state.email = user.email
+                st.session_state.department = getattr(user, "department", None)
+                st.session_state.login_time = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+                st.query_params.clear()
+                st.query_params["session"] = create_session_token(user.id, user.role.name)
+                st.success("Account created! Redirecting to your dashboard…")
+                st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Google-OAuth first-time student onboarding  (kept intact — do not remove)
+# ─────────────────────────────────────────────────────────────────────────────
 
 def render_student_onboarding(db, google_info: dict) -> None:
-    """Render the first-time student profile onboarding form."""
+    """Render the first-time student profile onboarding form (Google OAuth flow)."""
     from models.schema import Department, Program
     from services.oauth_service import register_google_student, parse_student_enrollment_from_email
-    
+
     email = (google_info.get("email") or "").strip()
     google_name = (google_info.get("name") or email.split("@")[0]).strip()
     extracted_enrollment = parse_student_enrollment_from_email(email) or email.split("@")[0].split(".gvp")[0]
+    logo_html = _logo_html("100px")
 
-    st.markdown("<div style='max-width: 620px; margin: 0 auto;'>", unsafe_allow_html=True)
-    st.image("assets/gujarat-vidyapith-logo.png", width=90)
-    st.markdown("## 🎓 First-Time Student Profile Setup")
-    st.caption("Please select your academic details to complete registration and access your practicals.")
+    st.markdown("<div style='max-width:620px; margin:0 auto;'>", unsafe_allow_html=True)
+    if logo_html:
+        st.markdown(f"<div style='display:flex; justify-content:center; margin-bottom:0.5rem;'>{logo_html}</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='text-align:center; margin-bottom:1rem;'>"
+        "<h2 style='margin-top:0;'>🎓 First-Time Student Profile Setup</h2>"
+        "<div style='font-size:0.9rem; color:var(--muted);'>Please select your academic details to complete registration and access your practicals.</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
     st.info(f"Signing in as **{email}**")
 
     departments = list(db.scalars(select(Department).order_by(Department.name)))
@@ -244,9 +414,9 @@ def render_student_onboarding(db, google_info: dict) -> None:
 
         submit_col, cancel_col = st.columns([2, 1])
         with submit_col:
-            submitted = st.form_submit_button("Complete Setup & Enter Dashboard", type="primary", use_container_width=True)
+            submitted = st.form_submit_button("Complete Setup & Enter Dashboard", type="primary", width="stretch")
         with cancel_col:
-            cancelled = st.form_submit_button("Cancel", use_container_width=True)
+            cancelled = st.form_submit_button("Cancel", width="stretch")
 
         if cancelled:
             st.session_state.pop("google_pending_registration", None)
@@ -275,7 +445,7 @@ def render_student_onboarding(db, google_info: dict) -> None:
                     st.session_state.login_time = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
                     st.query_params.clear()
                     st.query_params["session"] = create_session_token(user.id, user.role.name)
-                    st.success("Profile setup complete! Redirecting...")
+                    st.success("Profile setup complete! Redirecting…")
                     st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
