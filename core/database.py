@@ -28,10 +28,10 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 
 def run_migrations() -> None:
-    """Run all pending Alembic migrations up to head.
+    """Run all pending Alembic migrations up to head, then ensure table guards.
 
-    This is the production-grade schema upgrade path.
-    Falls back silently to init_db() if Alembic is unavailable.
+    This is the production-grade schema upgrade path. Automatically runs
+    on startup without requiring manual CLI commands.
     """
     try:
         import os
@@ -54,7 +54,9 @@ def run_migrations() -> None:
                 from alembic import command
                 command.upgrade(alembic_cfg, "head")
     except Exception:
-        # Alembic not configured or migrations dir missing — fall back to create_all
+        pass
+    finally:
+        # Guarantee that all tables and safe column additions are present
         init_db()
 
 
@@ -96,6 +98,33 @@ def init_db() -> None:
             subject_columns = {column["name"] for column in inspect(engine).get_columns("subjects")}
             if "program_id" not in subject_columns:
                 connection.execute(text("ALTER TABLE subjects ADD COLUMN program_id INTEGER REFERENCES programs(id)"))
+
+        # PDF display fields on practicals (nullable, non-breaking)
+        if inspect(engine).has_table("practicals"):
+            practical_columns = {column["name"] for column in inspect(engine).get_columns("practicals")}
+            if "unit_name" not in practical_columns:
+                connection.execute(text("ALTER TABLE practicals ADD COLUMN unit_name VARCHAR(100)"))
+            if "practical_code" not in practical_columns:
+                connection.execute(text("ALTER TABLE practicals ADD COLUMN practical_code VARCHAR(30)"))
+            if "assigned_date" not in practical_columns:
+                connection.execute(text("ALTER TABLE practicals ADD COLUMN assigned_date DATE"))
+
+        # Signature image fields on users and subject_header_configs (nullable)
+        if inspect(engine).has_table("users"):
+            user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
+            if "signature_image_path" not in user_columns:
+                connection.execute(text("ALTER TABLE users ADD COLUMN signature_image_path VARCHAR(255)"))
+
+        if inspect(engine).has_table("subject_header_configs"):
+            cfg_columns = {column["name"] for column in inspect(engine).get_columns("subject_header_configs")}
+            # If created by the previous migration draft with conflicting NOT NULL column `program_name`:
+            if "program_name" in cfg_columns or "institution_name" not in cfg_columns:
+                connection.execute(text("DROP TABLE subject_header_configs"))
+                # Re-create cleanly from metadata (only touches subject_header_configs)
+                Base.metadata.tables["subject_header_configs"].create(connection)
+            else:
+                if "signature_image_path" not in cfg_columns:
+                    connection.execute(text("ALTER TABLE subject_header_configs ADD COLUMN signature_image_path VARCHAR(255)"))
 
 
 def get_db() -> Generator:
